@@ -1,2 +1,6 @@
 __pycache__/
 tom_test/
+*.pdf
+*.csv
+*.png
+*.json

@@ -1,37 +1,45 @@
+# /agents/heuristic_agent.py
+
 import numpy as np
 import random
 from tiny_hanabi.agent.actors import Actor
 from .base_agent import BaseAgent
 
 class HeuristicAgent(BaseAgent):
-    def __init__(self, agent_id, num_actions, config=None):
-        self.id = agent_id
-        self.num_actions = num_actions
-        self.preferred_action = None
-        
-        # Calculate greedy strategy from config
-        if config and 'payoff_matrix' in config:
-            self._calculate_greedy_strategy(config['payoff_matrix'])
+    def __init__(
+            self,
+            num_cards,
+            num_actions,
+            config=None
+        ):
+        super().__init__(num_cards, num_actions)
+        self.NULL_VALUE = -1  # Padding for no previous action seen
 
-    def _calculate_greedy_strategy(self, matrix):
-        try:
-            best_joint_action = np.unravel_index(np.argmax(matrix), matrix.shape)
-            self.preferred_action = best_joint_action[self.id]
-        except Exception:
-            self.preferred_action = 0
-
-    def act(self, observation):
-        # 1. Check for 'suggestion' in observation (if your ToM agent sends hints later)
-        if hasattr(observation, 'suggestion') and observation.suggestion is not None:
-             return observation.suggestion
-        
-        # 2. Greedy/Optimistic
-        if self.preferred_action is not None:
-            return self.preferred_action
-            
-        # 3. Fallback
-        return np.random.randint(0, self.num_actions)
-        
-    def update(self, batch):
-        # Heuristic agent does not learn
+        return
+    def train(self):
         pass
+
+    def save_transition(self):
+        pass 
+    
+    def act(self, input_state: tuple) -> int:
+        """
+        input_state is [c0, c1, a0, a1] (masked).
+        """
+        partner_card = -1
+        
+        if input_state[0] == self.NULL_VALUE:
+            # I am Player 0, looking at Player 1's card
+            partner_card = input_state[1]
+        else:
+            # I am Player 1, looking at Player 0's card
+            partner_card = input_state[0]
+            
+        # If for some reason both are NULL (shouldn't happen in this game), fallback
+        if partner_card == self.NULL_VALUE:
+            return 0 # Default fallback
+
+        # 2. Heuristic Logic: Play the card value seen
+        if partner_card < self.num_actions:
+            return int(partner_card)
+        return 0

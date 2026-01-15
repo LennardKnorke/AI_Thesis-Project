@@ -1,51 +1,88 @@
+# /agents/base_agent.py
+
 from abc import ABC, abstractmethod
-from typing import List, Any, Tuple, Iterator
+from typing import List, Any, Tuple, Iterator, Optional
 
-from tiny_hanabi.agent.actors import Actor
+import numpy as np
 
-class BaseAgent(Actor, ABC):
+
+class BaseAgent:
+    MODEL_BASED : bool
     def __init__(
             self,
-            agent_id : int,
+            num_cards : int,
             num_actions : int,
             *args,
             **kwargs
     ):
-        # Initialize Actor (if it has an __init__)
-        super().__init__(*args, **kwargs) 
-        self.agent_id: int = agent_id
-        self.num_actions = num_actions
-        # Buffer for the last transition (needed for both IQL and VDN)
-        self.last_transition = None
+        """
+        Base class for all agents.
+        """
+        self.agent_id : int
+        self.num_actions: int = num_actions
+        self.num_cards: int = num_cards
+        return
+
+    @property
+    def requires_tensor(self) -> bool:
+        return False
         
+    def set_id(self, new_id):
+        self.agent_id = new_id
+
     @abstractmethod
     def train(self):
         """
-        Will potentially train the agent (if trainable and single agent training)
+        Will Train or Plan for the agent based on its internal model or data.
         """
         pass
 
-    # We re-declare act here (or ensure Actor has it) so the IDE knows 
-    # BaseAgent definitely has this method.
     @abstractmethod
-    def act(self, observation: Any) -> int:
+    def act(self, input_state: Any) -> int:
         pass
+
     @abstractmethod
-    def reset():
+    def save_transition(self):
         """
+        Save any transitions for learning.
+        """
+        return
+    
+    @abstractmethod
+    def save(self, filepath: str, *args, **kwargs):
+        """
+        Save the agent's model to disk.
         """
         pass
+
     @abstractmethod
-    def save_transition(
-        self,
-        observation,
-        action, 
-        next_observation,
-        reward,
-        done
-    ):
+    def load(self, filepath : str, *args, **kwargs):
         """
+        Load Agent model
         """
+        pass
+    
+
+class ModelBasedAgent(BaseAgent, ABC):
+    MODEL_BASED = True
+    @abstractmethod
+    def train(self):
+        """
+        Model-based agents may implement planning here.
+        Value Iteration over the learned models.
+        """
+        pass
+
+
+class ModelFreeAgent(BaseAgent, ABC):
+    MODEL_BASED = False
+    @abstractmethod
+    def train(self):
+        """
+        Model-free agents may implement learning here.
+        E.g., updating Q-values or policy networks.
+        """
+        pass
 
 
 class AgentList(List[BaseAgent]):
@@ -53,7 +90,8 @@ class AgentList(List[BaseAgent]):
     A list wrapper that holds multiple Actor objects.
     Inheriting from List[BaseAgent] tells the IDE that 'self' contains BaseAgents.
     """
-    def __init__(self, agents: List[BaseAgent]):
+    def __init__(self, agents: Optional[List[BaseAgent]], *args, **kwargs):
+
         # 1. Runtime Enforcement: Validate types immediately
         for i, agent in enumerate(agents):
             if not isinstance(agent, BaseAgent):
@@ -64,6 +102,11 @@ class AgentList(List[BaseAgent]):
         
         # Initialize the standard list
         super().__init__(agents)
+    
+    @property
+    def centralized_planning(self) -> bool:
+        return False
+
 
     def act(self, observations: List[Any]) -> List[int]:
         """
@@ -81,15 +124,13 @@ class AgentList(List[BaseAgent]):
         return joint_action
 
     def train(self):
+        losses = []
         for agent in self:
-            agent.train()
+            losses.append(agent.train())
+        return np.mean(losses)
 
     # Optional: If you want to strictly prevent adding non-agents later
     def append(self, object: BaseAgent):
         if not isinstance(object, BaseAgent):
             raise TypeError(f"Cannot append {type(object).__name__}; must be BaseAgent")
         super().append(object)
-
-    def reset(self):
-        for agent in self:
-            agent.reset()

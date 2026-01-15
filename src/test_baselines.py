@@ -1,13 +1,20 @@
-
+# test_baselines.py
 import numpy as np
 import os
 import pandas as pd
 
-from agents import AgentList, BaseAgent, RandomAgent
-from tiny_game import GAMES, DecPOMDP, get_game, GameNames, Settings
+from agents import (
+    AgentList, BaseAgent, 
+    RandomAgent
+)
+
+from tiny_game import (
+    GAMES, get_game_Rework, GameNames, Settings,
+    DecPOMP_Rework, PAYOFFS, normalize_payoffs
+)
 from runner import run_episode
 
-from config import EPISODES_TEST, RESULTS_DIR
+from config import RESULTS_DIR
 
 def test_baselines():
     test_random_agents()
@@ -31,7 +38,9 @@ def test_random_agents():
     for game_id in range(len(GAMES)):
         # Init GameType
         game_enum = GameNames(GAMES[game_id])
-        game : DecPOMDP = get_game(gamename=game_enum, setting=Settings.decpomdp)
+
+        # Ugly but works
+        game : DecPOMP_Rework = get_game_Rework(gamename=game_enum, setting=Settings.decpomdp)
 
         # Set up Agents
         num_actions = game.num_actions
@@ -46,12 +55,12 @@ def test_random_agents():
         # Loop Over Possible Starting State
         for start_state in s_states:
             col_name = f"{game_enum.name}_{str(start_state)}"
-            current_reward = []
+            current_reward = np.zeros(1_000)
 
             # Run each for a number of episodes
-            for _ in range(EPISODES_TEST):
+            for i in range(1_000):
                 episode_reward = run_episode(game, agent_list, test_episode=True, start_state=start_state)
-                current_reward.append(episode_reward)
+                current_reward[i] = episode_reward
             all_results_dict[col_name] = current_reward
     # Convert Results to Dataframe
     df = pd.DataFrame(all_results_dict)
@@ -67,3 +76,6 @@ def test_heuristic_agents():
 
 def test_decPOMDP_agents():
     print("Testing decPOMDP Agents not Implemented Yet.\n")
+
+
+###################################
