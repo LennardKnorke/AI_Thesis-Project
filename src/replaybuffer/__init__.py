@@ -31,7 +31,7 @@ class EpisodicReplayBuffer:
     Episodic Buffer: Stores full trajectories [step1, step2, ...] + Final Reward.
     """
     def __init__(self, capacity: int):
-        self.memory = deque(maxlen=capacity)
+        self.memory = deque(maxlen=int(capacity))
         self.current_episode: List[EpisodeStep] = []
 
     def push_step(self, state, action):

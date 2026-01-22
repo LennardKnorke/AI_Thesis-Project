@@ -26,19 +26,8 @@ from tiny_hanabi.game.assemblers import (
 class DecPOMP_Rework(DecPOMDP):
     def __init__(self, payoffs: np.ndarray, optimal_return: float):
         super().__init__(payoffs, optimal_return)
-        
-        self.history_length : int = 4  # 2 cards + 2 actions
-        
         self.NULL_VALUE : int = -1  # Padding for no previous action seen
         return
-
-
-    def get_playerId(self):
-        """
-        Determines current player based on history length.
-        (History contains 2 cards + N actions)
-        """
-        return 0 if len(self.history) == 2 or len(self.history) == 4 else 1
     
     def get_observation(
             self, 
@@ -69,7 +58,7 @@ class DecPOMP_Rework(DecPOMDP):
         
         # (Optional return as a tensor)
         if as_tensor:
-            padded = current_history + [self.NULL_VALUE] * (self.history_length - len(current_history))
+            padded = current_history + [self.NULL_VALUE] * (self.horizon - len(current_history))
             return torch.tensor(padded, dtype=torch.float32)
         
         return tuple(current_history)
@@ -89,6 +78,7 @@ class DecPOMP_Rework(DecPOMDP):
         # All Player 1 observations (no actions seen)
         for c1 in range(self.num_cards):
             obs = (self.NULL_VALUE, c1)
+            observations.append(obs)
 
         # All Player 2 observations (one action seen)
         for c0 in range(self.num_cards):
@@ -166,7 +156,7 @@ GAMES = ["A", "B", "C", "D", "E", "F"]
 __all__ = [
     "GameNames", "PAYOFFS","OPTIMAL_RETURNS",
     "statetype", "Settings", "Game",
-    #"DecPOMDP","get_game", 
+    "DecPOMDP","get_game", 
     "normalize_payoffs",
 
     "GAMES", "DecPOMP_Rework", "get_game_Rework"

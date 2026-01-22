@@ -1,0 +1,5 @@
+{
+    "convergence_threshold": 1e-05,
+    "max_iterations": 20.0,
+    "partner_epsilon": 1.0
+}

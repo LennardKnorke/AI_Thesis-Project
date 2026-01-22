@@ -1,6 +1,13 @@
 __pycache__/
 tom_test/
-*.pdf
-*.csv
+hanabi-learning-environment/
+test.py
+
 *.png
+*.pdf
+*.pkl
+
+*_results.csv
+!final_results.csv
 *.json
+!best_params.json

@@ -1,0 +1,6 @@
+{
+    "lr": 0.1,
+    "gamma": 1.0,
+    "batch_size": 32,
+    "updates_per_train": 5
+}

@@ -109,15 +109,13 @@ class VDN_AgentList(AgentList):
         self.lr = lr
         self.gamma = gamma
         self.batch_size = batch_size
-        self.updates_per_train = updates_per_train
+        self.updates_per_train = int(updates_per_train)
         
         self.epsilon = epsilon_start
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         
         # 1. Shared Components
-        # We use Parameter Sharing: Both agents write to the same table.
-        # This is efficient for symmetric games like Hanabi.
         self.q_table = defaultdict(lambda: np.ones(self.num_actions) * 10.0)
         
         self.buffer = EpisodicReplayBuffer(buffer_size)

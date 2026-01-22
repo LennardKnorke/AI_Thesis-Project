@@ -18,17 +18,9 @@ class BaseAgent:
         """
         Base class for all agents.
         """
-        self.agent_id : int
         self.num_actions: int = num_actions
         self.num_cards: int = num_cards
         return
-
-    @property
-    def requires_tensor(self) -> bool:
-        return False
-        
-    def set_id(self, new_id):
-        self.agent_id = new_id
 
     @abstractmethod
     def train(self):
@@ -61,6 +53,8 @@ class BaseAgent:
         Load Agent model
         """
         pass
+    def reset(self):
+        pass
     
 
 class ModelBasedAgent(BaseAgent, ABC):
@@ -83,6 +77,8 @@ class ModelFreeAgent(BaseAgent, ABC):
         E.g., updating Q-values or policy networks.
         """
         pass
+
+    
 
 
 class AgentList(List[BaseAgent]):
@@ -134,3 +130,7 @@ class AgentList(List[BaseAgent]):
         if not isinstance(object, BaseAgent):
             raise TypeError(f"Cannot append {type(object).__name__}; must be BaseAgent")
         super().append(object)
+
+    def reset(self):
+        for agent in self:
+            agent.reset()

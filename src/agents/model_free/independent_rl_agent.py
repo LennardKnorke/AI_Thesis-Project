@@ -45,24 +45,19 @@ class Independent_RL_Agent(ModelFreeAgent):
         self.replay_buffer = ReplayBuffer(buffer_size)
         self.batch_size = batch_size
         self.updates_per_train : int = updates_per_train
+        
         # Q-Table
         self.q_table = defaultdict(
             lambda: np.ones(self.num_actions) * 10.0
         )
-
-    @property
-    def requires_tensor(self)->bool:
-        return False
     
     def act(self, input_state: Tuple[int], exploit : bool = False) -> int:
         """
         Epsilon-Greedy Action Selection.
         """
-        state_key = tuple(input_state)
-        
         if exploit or np.random.rand() > self.epsilon:
             # Exploit: Choose best action
-            q_values  = self.q_table[state_key]
+            q_values  = self.q_table[input_state]
             max_val = np.max(q_values)
             best_actions = np.flatnonzero(q_values == max_val)
             action = np.random.choice(best_actions) # Break Ties Randomly
@@ -146,7 +141,7 @@ class Independent_RL_Agent(ModelFreeAgent):
             with open(save_path, 'wb') as f:
                 pickle.dump(model_parameters, f)
         except Exception as e:
-            print(f"Error saving model parameters for agent {self.agent_id}: {e}")
+            print(f"Error saving model parameters for agent")
 
     def load(self, load_path: str):
         """
@@ -167,4 +162,4 @@ class Independent_RL_Agent(ModelFreeAgent):
         except FileNotFoundError:
             print(f"File not found: {load_path}. keeping existing parameters.")
         except Exception as e:
-            print(f"Error loading model parameters for agent {self.agent_id}: {e}")
+            print(f"Error loading model parameters for agent: {e}")
