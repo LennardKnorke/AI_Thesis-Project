@@ -5,20 +5,26 @@ from .base_agent import (
     ModelBasedAgent, ModelFreeAgent
 )
 from .random_agent import RandomAgent
-from .heuristic_agent import HeuristicAgent
 
-from .model_free.independent_rl_agent import Independent_RL_Agent
-from .model_free.vdn_rl_agent import VDN_AgentList, VDN_RL_Agent
-from .model_based.independent_vi_agent import Independent_VI_Agent
-from .model_based.vdn_vi_agent import VDN_VI_Agent, VDN_VI_AgentList
+from .model_free.dtde_qsarsa import DTDE_QSarsa_MF_Agent
+from .model_free.ctde_vdn import CTDE_VDN_MF_Agent, CTDE_VDN_MF_List
+
+from .model_based.dtde_bi import DTDE_BI_MB_Agent
+
+from .model_based.ctde_bi import CTDE_BI_MB_Agent, CTDE_BI_MB_List
+
+# TOM
+from .model_based.dtde_ToM import DTDE_ToMBI_Agent, ToM_WorldModel
 
 __all__ = [
-    "AgentList", "BaseAgent"
-    "RandomAgent", "HeuristicAgent",
+    "AgentList", "BaseAgent",
+    "RandomAgent",
     "ModelBasedAgent", "ModelFreeAgent",
     
-    "Independent_RL_Agent",
-    "Independent_VI_Agent",
-    "VDN_AgentList", "VDN_RL_Agent",
-    "VDN_VI_Agent", "VDN_VI_AgentList"
+    "DTDE_QSarsa_MF_Agent",
+    "CTDE_VDN_MF_Agent", "CTDE_VDN_MF_List",
+
+    "DTDE_BI_MB_Agent",
+    "CTDE_BI_MB_Agent", "CTDE_BI_MB_List",
+    "DTDE_ToMBI_Agent", "ToM_WorldModel"
 ]

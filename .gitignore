@@ -6,6 +6,7 @@ test.py
 *.png
 *.pdf
 *.pkl
+*.pth
 
 *_results.csv
 !final_results.csv

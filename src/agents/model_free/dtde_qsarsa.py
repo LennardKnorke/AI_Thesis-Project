@@ -6,12 +6,12 @@ import pickle
 from typing import Any, Tuple
 
 from tiny_game import DecPOMP_Rework
-from replaybuffer import ReplayBuffer, Transition
+from replaybuffer import ReplayBuffer, Transition, EpisodicReplayBuffer, EpisodeStep
 
 from ..base_agent import BaseAgent, ModelFreeAgent
 
 
-class Independent_RL_Agent(ModelFreeAgent):
+class DTDE_QSarsa_MF_Agent(ModelFreeAgent):
     """
     Independent Model Free Reinforcement Learning Agent
     """
@@ -27,7 +27,6 @@ class Independent_RL_Agent(ModelFreeAgent):
             epsilon_min: float = 0.05,
             epsilon_decay: float = 0.9995,
             batch_size: int = 32,
-            updates_per_train : int = 1,
             buffer_size: int = 10_000,
 
             *args, **kwargs):
@@ -39,12 +38,11 @@ class Independent_RL_Agent(ModelFreeAgent):
         self.epsilon = epsilon_start
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
+        self.batch_size = batch_size
+        self.buffer_size = buffer_size
 
         # Replay Buffer
-        self.buffer_size = buffer_size
-        self.replay_buffer = ReplayBuffer(buffer_size)
-        self.batch_size = batch_size
-        self.updates_per_train : int = updates_per_train
+        self.replay_buffer = EpisodicReplayBuffer(buffer_size)
         
         # Q-Table
         self.q_table = defaultdict(
@@ -71,13 +69,9 @@ class Independent_RL_Agent(ModelFreeAgent):
         """
         Store experience in the Replay Buffer.
         """
-        self.replay_buffer.push(
-            observation,
-            action,
-            next_observation,
-            reward,
-            done
-        )
+        self.replay_buffer.push_step(tuple(observation), action)
+        if done:
+            self.replay_buffer.close_episode(reward)
 
     def train(self)->float:
         """
@@ -89,47 +83,29 @@ class Independent_RL_Agent(ModelFreeAgent):
             return 0.0  # Not enough samples to train
         
         total_loss = 0.0
+        batch = self.replay_buffer.sample(self.batch_size)
 
-        for _ in range(self.updates_per_train):
-            # 2. Sample Batch
-            batch = self.replay_buffer.sample(self.batch_size)
-            batch_loss = 0.0
 
-            # 3. Loop over Batch
-            for transition in batch:
-                # 3.1 Set up Transition Elements
-                state = tuple(transition.state)
-                action = transition.action
-                reward = transition.reward
-                done = transition.done
-                if transition.next_state is not None:
-                    next_state = tuple(transition.next_state)
-                else:
-                    next_state = None
-
-                # 3.2 Q-Learning Update
-                # 3.2.1 Get Current Q
+        # 3. Loop over Batch
+        for episode_steps, final_reward in batch:
+            G = final_reward
+            for step in reversed(episode_steps):
+                state = step.state
+                action = step.action
+                
                 current_q = self.q_table[state][action]
-
-                # 3.2.2. Calc Target Q
-                if done or next_state is None:
-                    max_next_q = 0.0
-                else:
-                    max_next_q = np.max(self.q_table[next_state])
-                td_target = reward + self.gamma * max_next_q
-
-                # 3.2.3 Calc Error + update
-                td_error = td_target - current_q
+                
+                # Update Q towards G
+                td_error = G - current_q
                 self.q_table[state][action] += self.lr * td_error
+                
+                total_loss += abs(td_error)
+                
+                # Discount G for the previous step (if any)
+                G = G * self.gamma
 
-                # 3.3 Update loss
-                batch_loss += abs(td_error)
-            total_loss += (batch_loss / self.batch_size)
-        # 4. Update Epsilon
         self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
-
-        # Return Loss
-        return total_loss / self.updates_per_train
+        return total_loss / self.batch_size
     
     def save(self, save_path: str):
         """

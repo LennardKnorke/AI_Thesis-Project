@@ -1,3 +1,4 @@
+#hypersearch_baselines.py
 import json
 import numpy as np
 import pandas as pd
@@ -10,107 +11,56 @@ from tiny_game import GAMES, Settings, GameNames, DecPOMDP, get_game
 from runner import run_training
 from config import (
     TRAINING_EPISODES_HYPERSEARCH,
-    modelfree_IQ_Learner_paramList,
-    modelbased_IQ_Learner_paramList,
-    vdn_rl_paramList,
-    vdn_vi_paramList
-)
-from agents import (
-    AgentList, BaseAgent,
-    ModelFreeAgent, ModelBasedAgent,
-    Independent_RL_Agent, Independent_VI_Agent,
-    VDN_RL_Agent, VDN_AgentList,
-    VDN_VI_Agent, VDN_VI_AgentList
+    BASELINE_EXPERIMENTS, Experiment
 )
 
 RESULTS_DIR = "HyperSearchResults/"
-
-# Baseline Experiments Setup
-baselines_experiments = {
-    "Independent_RL_Agent": {
-        "learning_agents": Independent_RL_Agent,
-        "parameters": modelfree_IQ_Learner_paramList,
-        "list_type": AgentList 
-    },
-    "Independent_VI_Agent": {
-        "learning_agents": Independent_VI_Agent,
-        "parameters": modelbased_IQ_Learner_paramList,
-        "list_type": AgentList
-    },
-    "VDN_RL_Agents" : {
-        "learning_agents" : VDN_RL_Agent,
-        "parameters" : vdn_rl_paramList,
-        "list_type" : VDN_AgentList
-    },
-    "VDN_VI_Agents" : {
-        "learning_agents" : VDN_VI_Agent,
-        "parameters" : vdn_vi_paramList,
-        "list_type" : VDN_VI_AgentList
-    }
-}
-
 
 def hypersearch_baselines() -> None:
     """
     Loop over all baseline algorithms and perform hyperparameter search training.
     """
-    for algo_name, algo_data in baselines_experiments.items():
-        if algo_data is None:
-            continue
-        hypersearch_algorithm(algo_name, **algo_data)
+    for exp in BASELINE_EXPERIMENTS:
+        hypersearch_algorithm(exp)
     return
 
 
-def hypersearch_algorithm(
-        algorithm: str, 
-        learning_agents : BaseAgent, 
-        parameters: List[Dict[str, Any]],
-        list_type: Any,
-        *args, **kwargs) -> None:
+def hypersearch_algorithm(exp: Experiment,*args, **kwargs) -> None:
     """
     Train a specific baseline algorithm and do hyperparameter search.
     """
     # 1. Create Directory Structure
-    # Structure: HyperSearchResults / {Agent_Name} / Search_Results /
-    results_dir = os.path.join(RESULTS_DIR, algorithm.replace(" ", "_"))
+    # Structure: HyperSearchResults / {Agent_Name}
+    results_dir = os.path.join(RESULTS_DIR, exp.name.replace(" ", "_"))
     os.makedirs(results_dir, exist_ok=True)
 
     # START - LOOP OVER PARAM SETS
-    pbar = tqdm(range(len(parameters)), desc=f"{algorithm} Search")
+    print(f"\nHyperparameter Search for {exp.name}")
+    pbar = tqdm(range(len(exp.param_list)))
     
     for idx in pbar:
-        params : Dict[str, Any] = parameters[idx]
+        params : Dict[str, Any] = exp.param_list[idx]
 
-        results_filepath = os.path.join(results_dir, f"{idx}_results.csv")
+        results_file = os.path.join(results_dir, f"{idx}_results.csv")
         
         # Check if completed
-        if results_do_exists(results_path=results_filepath, **params):
+        if results_do_exists(results_path=results_file, **params):
             continue
-
         results_cache = {}
 
         # START - TRAIN PARAMS ON ALL GAMES
         for game_name in GAMES:
             # Set up Game Instance
-            game = get_game(GameNames(game_name), Settings.decpomdp, normalize=False)
-            num_cards = game.num_cards
-            num_actions = game.num_actions
+            ENV = get_game(GameNames(game_name), Settings.decpomdp, normalize=False)
 
             # Set up Agents
-            agents = setup_agents(
-                learning_agents,
-                params,
-                num_cards,
-                num_actions,
-                env=game,
-                list_type=list_type
-            )
+            AGENTS = exp.make_agents(ENV, params)
 
             # Update kwargs for search
             run_kwargs = params.copy()
             
             # Handle Model-Based vs Model-Free arguments
-            if agents[0].MODEL_BASED:
+            if exp.is_model_based:
                 if 'iterations' in run_kwargs:
                     run_kwargs['max_iterations'] = run_kwargs.pop('iterations')
             else:
@@ -122,8 +72,8 @@ def hypersearch_algorithm(
             
             # Run Training
             game_rewards, game_losses, _ = run_training(
-                env=game,
-                agents=agents,
+                env=ENV,
+                agents=AGENTS,
                 **run_kwargs
             )
 
@@ -134,9 +84,10 @@ def hypersearch_algorithm(
         # END - TRAIN PARAMS ON ALL GAMES
         
         # Save Combined CSV
-        # Use pd.Series to handle different convergence lengths
         results_df = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in results_cache.items()]))
-        results_df.to_csv(results_filepath, index=False)
+        results_df.index.name = "episode"
+        results_df.reset_index(inplace=True)
+        results_df.to_csv(results_file, index=False)
 
         # Save params used
         params_filepath = os.path.join(results_dir, f"{idx}_params.json")
@@ -161,58 +112,7 @@ def results_do_exists(results_path: str, **params) -> bool:
         return False
 
     # Check for mismatches
-    for key, value in params.items():
-        if key not in saved_params or saved_params[key] != value:
+    for key, value in saved_params.items():
+        if key not in params or saved_params[key] != value:
             return False
     return True
-
-
-def setup_agents(
-        learning_agents : Any, 
-        parameters: Dict[str, Any],
-        num_cards: int,
-        num_actions: int,
-        env: DecPOMDP,
-        list_type : Any, 
-    ) -> AgentList:
-    """
-    Set up agents for a specific baseline algorithm.
-    """
-    # 1. Centralized Lists (VDN)
-    if list_type is not AgentList:
-        # Check params to guess if Model-Based (heuristic check)
-        if "iterations" in parameters or "convergence_threshold" in parameters:
-             # Model-Based Centralized
-             agents_instances = list_type(
-                num_cards=num_cards,
-                num_actions=num_actions,
-                env=env,
-                **parameters
-            )
-        else:
-            # Model-Free Centralized
-            agents_instances = list_type(
-                num_cards=num_cards,
-                num_actions=num_actions,
-                **parameters
-            )
-        agents = agents_instances
-        
-    # 2. Decentralized (Standard List)
-    else:
-        if issubclass(learning_agents, ModelBasedAgent):
-            # Model-Based Independent
-            # FIX: Removed 'agent_id' as they are now role-agnostic/unified
-            agents_instances = [
-                learning_agents(num_cards, num_actions, env=env, **parameters),
-                learning_agents(num_cards, num_actions, env=env, **parameters)
-            ]
-        else:
-            # Model-Free Independent
-            agents_instances = [
-                learning_agents(num_cards, num_actions, **parameters),
-                learning_agents(num_cards, num_actions, **parameters)
-            ]
-        agents = AgentList(agents_instances)
-        
-    return agents

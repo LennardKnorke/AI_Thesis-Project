@@ -10,7 +10,7 @@ Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'
 
 class ReplayBuffer:
     def __init__(self, capacity: int):
-        self.memory = deque(maxlen=capacity)
+        self.memory = deque(maxlen=int(capacity))
 
     def push(self, *args):
         """Save a transition"""

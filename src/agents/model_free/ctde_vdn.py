@@ -11,7 +11,7 @@ from agents.base_agent import ModelFreeAgent, AgentList
 
 
 
-class VDN_RL_Agent(ModelFreeAgent):
+class CTDE_VDN_MF_Agent(ModelFreeAgent):
     """
     Decentralized Execution Agent for VDN.
     - Acts using a shared Q-table.
@@ -81,7 +81,7 @@ class VDN_RL_Agent(ModelFreeAgent):
         pass
 
 
-class VDN_AgentList(AgentList):
+class CTDE_VDN_MF_List(AgentList):
     """
     Centralized Training Controller for VDN.
     - Manages the Shared Q-Table (Parameter Sharing).
@@ -121,8 +121,8 @@ class VDN_AgentList(AgentList):
         self.buffer = EpisodicReplayBuffer(buffer_size)
         
         # 2. Create Agents
-        agent_0 = VDN_RL_Agent(num_cards, num_actions, self.q_table, self.buffer, epsilon_start)
-        agent_1 = VDN_RL_Agent(num_cards, num_actions, self.q_table, self.buffer, epsilon_start)
+        agent_0 = CTDE_VDN_MF_Agent(num_cards, num_actions, self.q_table, self.buffer, epsilon_start)
+        agent_1 = CTDE_VDN_MF_Agent(num_cards, num_actions, self.q_table, self.buffer, epsilon_start)
         
         # Initialize List
         super().__init__([agent_0, agent_1])

@@ -1,45 +1,53 @@
 # main.py
-
-import os
-import sys
-
 from hypersearch_baselines import hypersearch_baselines
-from train_test_baselines import train_test_baselines
+from hypersearch_tom import hypersearch_tom
+
 from train_worldmodel import train_worldmodel
-from tom_training_testing import tom_training_testing
+
+from train_test_baselines import train_test_baselines
+from train_test_tom import train_test_tom
 
 if __name__ == "__main__":
     run_main = True
     while run_main:
         choice = None
-        while choice not in ["1", "2", "3", "4", "5"]:
+        while choice not in ["1", "2", "3", "4", "5", "6", "7"]:
             print("1. Hyperparameter Search - Baselines Agents")
-            print("2. Train/Test Baseline Agents")
-            print("3. Train World-Model")
-            print("4. (Hyperparameter Search + )Train/Test ToM-Agents")
-            print("5. Do All!")
-            print("6. Exit")
-            choice = input("Select an option (1-5): ")
-            print()
-        # Execute the selected option
+            print("2. Train/Test - Baseline Agents")
+            print("3. Hyperparameter Search - ToM World-Model (+ Train/Test)")
+            print("4. Hyperparameter Search - ToM-Agent")
+            print("5. Train/Test - ToM-Agent")
+            print("6. Do All!")
+            print("7. Exit")
+            choice = input("Select an option (1-7): ")
+        # Baselines
         if choice == "1":
-            hypersearch_baselines()
+            hypersearch_baselines() 
         elif choice == "2":
             train_test_baselines()
+        # World Model
         elif choice == "3":
             train_worldmodel()
+        # ToM Agent
         elif choice == "4":
-            tom_training_testing()
-        elif choice =="5":
+            hypersearch_tom()
+        elif choice == "5":
+            train_test_tom()
+        # EVERYTHING
+        elif choice =="6":
+            # Baselines
             hypersearch_baselines()
             train_test_baselines()
+            # World Model
             train_worldmodel()
-            tom_training_testing()
+            # ToM Agent
+            hypersearch_tom()
+            train_test_tom()
             run_main = False
-        elif choice == "6":
+        elif choice == "7":
             run_main = False
         else:
             print("Invalid choice. Please try again.")
             input("Press Enter to continue...")
-    print("Exiting the program.")
+    print("Done.")
 ###################################
