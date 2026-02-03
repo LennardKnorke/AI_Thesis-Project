@@ -9,12 +9,8 @@ from typing import Tuple, Dict, Union, Any, List, Optional
 # Own Imports
 from tiny_game import GAMES, Settings, GameNames, DecPOMDP, get_game
 from runner import run_training
-from config import (
-    TRAINING_EPISODES_HYPERSEARCH,
-    BASELINE_EXPERIMENTS, Experiment
-)
+from config import *
 
-RESULTS_DIR = "HyperSearchResults/"
 
 def hypersearch_baselines() -> None:
     """
@@ -31,7 +27,7 @@ def hypersearch_algorithm(exp: Experiment,*args, **kwargs) -> None:
     """
     # 1. Create Directory Structure
     # Structure: HyperSearchResults / {Agent_Name}
-    results_dir = os.path.join(RESULTS_DIR, exp.name.replace(" ", "_"))
+    results_dir = os.path.join(HYPERSEARCH_RESULTS_DIR, exp.name.replace(" ", "_"))
     os.makedirs(results_dir, exist_ok=True)
 
     # START - LOOP OVER PARAM SETS

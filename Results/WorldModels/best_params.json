@@ -1,7 +1,0 @@
-{
-    "char_dim": 64,
-    "mental_dim": 16,
-    "lr": 0.01,
-    "batch_size": 32,
-    "epochs": 20
-}

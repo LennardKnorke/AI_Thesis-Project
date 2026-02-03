@@ -2,6 +2,7 @@
 from collections import defaultdict
 import itertools
 import numpy as np
+import os
 import pickle
 from typing import Any, Tuple
 
@@ -48,6 +49,12 @@ class DTDE_QSarsa_MF_Agent(ModelFreeAgent):
         self.q_table = defaultdict(
             lambda: np.ones(self.num_actions) * 10.0
         )
+        for card in range(self.num_cards):
+            tmp_input = (-1, card)
+            self.q_table[tmp_input] = np.ones(self.num_actions) * 10.0
+            for action in range(self.num_actions):
+                tmp_input = (card, -1, action)
+                self.q_table[tmp_input] = np.ones(self.num_actions) * 10.0
     
     def act(self, input_state: Tuple[int], exploit : bool = False) -> int:
         """
@@ -111,31 +118,30 @@ class DTDE_QSarsa_MF_Agent(ModelFreeAgent):
         """
         Save the Q-Table parameters to a file.
         """
-        # Convert defaultdict to standard dict for pickling
-        model_parameters = dict(self.q_table)
-        try:
-            with open(save_path, 'wb') as f:
-                pickle.dump(model_parameters, f)
-        except Exception as e:
-            print(f"Error saving model parameters for agent")
+        data = {
+            "q_vals" : dict(self.q_table)
+        }
+        with open(save_path, 'wb') as f:
+            pickle.dump(data, f)
+        return
 
     def load(self, load_path: str):
         """
         Load the Q-Table parameters from a file.
         """
-        try:
-            with open(load_path, 'rb') as f:
-                model_parameters = pickle.load(f)
-            
-            # Verify data integrity
-            if not isinstance(model_parameters, dict):
-                raise ValueError("Loaded file does not contain a valid dictionary.")
-            
-            # Reconstruct defaultdict
-            self.q_table = defaultdict(lambda: np.zeros(self.num_actions))
-            self.q_table.update(model_parameters)
-            
-        except FileNotFoundError:
-            print(f"File not found: {load_path}. keeping existing parameters.")
-        except Exception as e:
-            print(f"Error loading model parameters for agent: {e}")
+        if not os.path.exists(load_path):
+            raise FileNotFoundError(load_path)
+        if os.path.getsize(load_path) == 0:
+            raise ValueError("Q-table file is empty")
+        
+        with open(load_path, 'rb') as f:
+            data = pickle.load(f)
+        # Verify data integrity
+        if not isinstance(data, dict):
+            raise ValueError("Loaded file does not contain a valid dictionary.")
+        if len(data.keys()) == 0:
+            raise ValueError("Empty File")
+        
+        # Reconstruct defaultdict
+        self.q_table.update(data['q_vals'])
+        return

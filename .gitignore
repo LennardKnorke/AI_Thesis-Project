@@ -2,6 +2,7 @@ __pycache__/
 tom_test/
 hanabi-learning-environment/
 test.py
+*checkpoint.ipynb
 
 *.png
 *.pdf

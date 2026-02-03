@@ -10,19 +10,14 @@ from tqdm import tqdm
 from tiny_game import GAMES, Settings, GameNames, get_game, DecPOMDP
 from runner import run_training
 from agents import *
-from config import TRAINING_EPISODES_FINAL, Experiment
-
-# --- DIRECTORY CONFIGURATION ---
-HYPERSEARCH_DIR = "HyperSearchResults"
-FINAL_RESULTS_DIR = "Results"
-
+from config import *
 
 def load_best_params(agent_name: str) -> List[Dict[str, Any]]:
     """
     Reads from: HyperSearchResults/{Agent_Name}/best_params.json
     """
     folder_name = agent_name.replace(" ", "_")
-    path = os.path.join(HYPERSEARCH_DIR, folder_name, "best_params.json")
+    path = os.path.join(HYPERSEARCH_RESULTS_DIR, folder_name, "best_params.json")
     
     if not os.path.exists(path):
         return []
@@ -69,7 +64,7 @@ def save_final_model(
     Prefixes files with G_{GameName}_...
     """
     folder_name = agent_name.replace(" ", "_")
-    agent_save_dir = os.path.join(FINAL_RESULTS_DIR, folder_name)
+    agent_save_dir = os.path.join(RESULTS_DIR, folder_name)
     os.makedirs(agent_save_dir, exist_ok=True)
 
     # Save Agents
@@ -100,7 +95,7 @@ def train_test_baselines():
         results_cache = {}
 
         # --- SKIP LOGIC: Check if results already exist ---
-        final_csv_path = os.path.join(FINAL_RESULTS_DIR, folder_name, "final_results.csv")
+        final_csv_path = os.path.join(RESULTS_DIR, folder_name, "final_results.csv")
         if os.path.exists(final_csv_path):
             continue
         

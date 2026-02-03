@@ -16,12 +16,8 @@ from tqdm import tqdm
 
 from tiny_game import GAMES, Settings, GameNames, get_game
 from agents import ToM_WorldModel
-from config import BASELINE_EXPERIMENTS 
+from config import * 
 from train_test_baselines import load_best_params
-
-# --- CONFIGURATION ---
-RESULTS_DIR = "Results/WorldModels"
-BASELINE_MODELS_DIR = "Results" 
 
 # Data Collection Settings
 PAST_EPISODES_CONTEXT = 5  
@@ -98,7 +94,7 @@ def _collect_data_for_game(game_name: str) -> Optional[ToMDataset]:
 
         # Load Weights
         folder_name = exp.name.replace(" ", "_")
-        load_dir = os.path.join(BASELINE_MODELS_DIR, folder_name)
+        load_dir = os.path.join(RESULTS_DIR, folder_name)
         shared_path = os.path.join(load_dir, f"G_{game_name}_shared_model.pkl")
         p0_path = os.path.join(load_dir, f"G_{game_name}_agent_0.pkl")
         p1_path = os.path.join(load_dir, f"G_{game_name}_agent_1.pkl")
@@ -308,7 +304,7 @@ def train_evaluate_single_model(train_set, val_set, act_dim, params):
 
 # --- MAIN SEARCH ROUTINE ---
 def train_worldmodel():
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(WORLD_MODELS_DIR, exist_ok=True)
     
     # 1. Pre-Collect Data (Once)
     datasets_cache = prepare_all_datasets()
@@ -375,7 +371,7 @@ def train_worldmodel():
     print("="*60)
     
     # Save Params
-    with open(os.path.join(RESULTS_DIR, "best_params.json"), 'w') as f:
+    with open(os.path.join(WORLD_MODELS_DIR, "best_params.json"), 'w') as f:
         json.dump(best_params, f, indent=4)
         
     if best_params:
@@ -406,15 +402,15 @@ def train_worldmodel():
         
         # Create DataFrame from the records
         history_df = pd.DataFrame(history_records)
-        history_df.to_csv(os.path.join(RESULTS_DIR, "best_world_model_training_history.csv"), index=False)
-        print(f"Saved best model's training history to {os.path.join(RESULTS_DIR, 'best_world_model_training_history.csv')}")
+        history_df.to_csv(os.path.join(WORLD_MODELS_DIR, "best_world_model_training_history.csv"), index=False)
+        print(f"Saved best model's training history to {os.path.join(WORLD_MODELS_DIR, 'best_world_model_training_history.csv')}")
 
 
     # 3. Save the individual model state_dicts for each game, using the GLOBAL best parameters
     if best_global_model_states:
         print("\nSaving individual models for the global best parameters...")
         for game_name, state_dict in best_global_model_states.items():
-            save_path = os.path.join(RESULTS_DIR, f"ToM_WorldModel_{game_name}.pth")
+            save_path = os.path.join(WORLD_MODELS_DIR, f"ToM_WorldModel_{game_name}.pth")
             torch.save(state_dict, save_path)
             # print(f"Saved {save_path}") # Uncomment for verbose output
     else:

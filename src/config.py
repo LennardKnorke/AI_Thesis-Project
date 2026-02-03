@@ -11,6 +11,10 @@ from agents import *
 TRAINING_EPISODES_HYPERSEARCH = 10_000
 TRAINING_EPISODES_FINAL = 100_000
 
+# Directory Macros
+HYPERSEARCH_RESULTS_DIR = "HyperSearchResults"
+WORLD_MODELS_DIR = "Results\\WorldModels"
+RESULTS_DIR = "Results"
 
 class Experiment:
     """
@@ -108,8 +112,6 @@ DTDE_BI_MB_params = [
     {"max_iterations": 1, "partner_optimality": 1.0},
     {"max_iterations": 10, "partner_optimality": 1.0},
     {"max_iterations": 100, "partner_optimality": 1.0},
-    {"max_iterations": 500, "partner_optimality": 1.0},
-    {"max_iterations": 1000, "partner_optimality": 1.0},
 ]
 
 # CTDE_BI_MB
@@ -117,8 +119,6 @@ CTDE_BI_MB_params = [
     {"max_iterations": 1}, 
     {"max_iterations": 10}, 
     {"max_iterations": 100},
-    {"max_iterations": 500},
-    {"max_iterations": 1000}
 
 ] 
 
@@ -166,19 +166,9 @@ tom_worldmodel_params : List[Dict[str, Union[float, str, int]]]= generate_param_
 
 
 # --- THEORY OF MIND AGENT HYPERPARAMETERS ---
-# Parameters for DTDE_ToMBI_Agent itself
-DTDE_ToMBI_grid = {
-    'max_iterations': [1], # Backward Induction is a single pass. Max_iterations here refers to the planning loop iterations.
-    'convergence_threshold': [1e-5], # How much the Q-values need to change to consider converged
-    'attempts': [1, 5] # Multiple random restarts for BI (optional, but can help against local optima if BI were iterative)
-}
-DTDE_ToMBI_params = generate_param_grid(DTDE_ToMBI_grid)
+DTDE_ToMBI_params = [
+    {"max_iterations": 1}, 
+    {"max_iterations": 10}, 
+    {"max_iterations": 100},
 
-
-# --- THEORY OF MIND EXPERIMENT ---
-TOM_AGENT_EXPERIMENT = Experiment(
-    name="DTDE ToMBI", # Name for results folder
-    agent_class=DTDE_ToMBI_Agent,
-    param_list=DTDE_ToMBI_params,
-    list_class=AgentList # ToMBI agents are decentralized
-)
+] 

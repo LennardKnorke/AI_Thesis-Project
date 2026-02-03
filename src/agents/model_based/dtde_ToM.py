@@ -1,7 +1,7 @@
 #agents/model_based/dtde_ToM.py
 import random
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pickle
@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 from tiny_game import DecPOMDP
 
-from ..base_agent import ModelBasedAgent
+from ..base_agent import ModelBasedAgent, AgentList, BaseAgent
 
 
 # --- GLOBAL CONSTANTS (for ToMnet input formatting) ---
@@ -411,3 +411,82 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
     def reset(self): 
         # For new training attempts, reset policy to random for exploration
         self._init_tables()
+
+
+class DTDE_ToMBI_List(AgentList):
+    """
+    A specialized AgentList for the ToM Agent's training.
+    
+    It always contains ONE DTDE_ToMBI_Agent (the focal agent) and ONE partner agent.
+    Only the focal ToM agent is trained; the partner's policy is fixed.
+    """
+    def __init__(self, focal_tom_agent: DTDE_ToMBI_Agent, initial_partner_agent: BaseAgent):
+        # Validate types
+        if not isinstance(focal_tom_agent, DTDE_ToMBI_Agent):
+            raise TypeError(f"Focal agent must be an instance of DTDE_ToMBI_Agent. Got {type(focal_tom_agent).__name__}.")
+        if not isinstance(initial_partner_agent, BaseAgent):
+            raise TypeError(f"Partner agent must be an instance of BaseAgent. Got {type(initial_partner_agent).__name__}.")
+            
+        # Store agents internally. The 'list' aspect of AgentList is just for iteration.
+        self._focal_agent = focal_tom_agent
+        self._partner_agent = initial_partner_agent
+        
+        # Initialize the base AgentList with the current pair.
+        # This is the actual list that `run_episode` will iterate over.
+        # Player 0 is typically the focal agent during planning here.
+        super().__init__([self._focal_agent, self._partner_agent])
+
+    @property
+    def centralized_planning(self) -> bool:
+        # ToM BI is decentralized planning from the focal agent's perspective.
+        return False
+
+    def act(self, observations: List[Any]) -> List[int]:
+        """
+        Queries the current two agents for their actions.
+        """
+        if len(observations) != 2: # Always expect 2 observations for 2 agents
+            raise ValueError(f"Expected 2 observations for 2 agents, got {len(observations)}.")
+
+        joint_action = [
+            self._focal_agent.act(observations[0]),  # P0 is focal
+            self._partner_agent.act(observations[1])  # P1 is partner
+        ]
+        return joint_action
+
+    def train(self) -> float:
+        """
+        Only trains (or plans for) the focal ToM agent. The partner is fixed.
+        """
+        # The 'train' method of the DTDE_ToMBI_Agent will perform Backward Induction
+        # for *itself*, considering the world model's predictions of the partner.
+        loss = self._focal_agent.train()
+        return loss
+
+    def reset(self):
+        """
+        Resets both the focal ToM agent and the partner agent.
+        """
+        self._focal_agent.reset()
+        self._partner_agent.reset()
+
+    def switch_partner(self, new_partner_agent: BaseAgent):
+        """
+        Switches the partner agent for the ToM agent.
+        The list of agents managed by AgentList is updated.
+        """
+        if not isinstance(new_partner_agent, BaseAgent):
+            raise TypeError(f"New partner must be an instance of BaseAgent. Got {type(new_partner_agent).__name__}.")
+        
+        self._partner_agent = new_partner_agent
+        # Update the internal list of the base AgentList class
+        self.clear() # Clear the old agents
+        self.append(self._focal_agent)
+        self.append(self._partner_agent)
+        # Note: If order matters (P0/P1), ensure it's (focal, partner)
+
+    def get_focal_agent(self) -> DTDE_ToMBI_Agent:
+        return self._focal_agent
+
+    def get_partner_agent(self) -> BaseAgent:
+        return self._partner_agent

@@ -1,6 +1,7 @@
 # dtde_bi.py
 import random
 import numpy as np
+import os
 import pickle
 from collections import defaultdict
 from typing import Dict, List, Optional
@@ -171,9 +172,23 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         data = {"policy": self.policy, "v_values": dict(self.v_values)}
         with open(filepath, 'wb') as f:
             pickle.dump(data, f)
+        return
     
     def load(self, filepath: str):
-        pass # Standard pickle load
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(filepath)
+        if os.path.getsize(filepath) == 0:
+            raise ValueError("Q-table file is empty")
+        
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("Loaded file does not contain a valid dictionary.")
+        
+        # Reconstruct defaultdict
+        self.policy.update(data['policy'])
+        self.v_values.update(data['v_values'])
+        return
     
     def save_transition(self, *args): pass
     def reset(self): pass

@@ -154,3 +154,24 @@ class CTDE_BI_MB_List(AgentList):
         # if using the 'attempts' loop in runner.
         for obs in self.all_observations:
             self.policy[obs] = random.randint(0, self.num_actions - 1)
+
+    def load(self, filepath: str):
+        """
+        Loads the Shared Policy.
+        """
+        try:
+            with open(filepath, 'rb') as f:
+                loaded_policy = pickle.load(f)
+            # Make sure it's a dict and update our policy
+            if isinstance(loaded_policy, dict):
+                self.policy = loaded_policy
+                # Important: The CTDE_BI_MB_Agent instances also hold references
+                # to this self.policy, so they will automatically be updated.
+            else:
+                raise ValueError("Loaded file does not contain a valid policy dictionary.")
+        except FileNotFoundError:
+            print(f"File not found: {filepath}. Initializing policy randomly.")
+            self.reset()
+        except Exception as e:
+            print(f"Error loading BI model from {filepath}: {e}. Initializing policy randomly.")
+            self.reset()
