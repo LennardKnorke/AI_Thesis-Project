@@ -1,15 +1,18 @@
 # /agents/base_agent.py
 
 from abc import ABC, abstractmethod
-from typing import List, Any, Tuple, Iterator, Optional
+from typing import Any, Iterator
 
 import numpy as np
+
+from tiny_game import Game, DecPOMDP, MyHanabi
 
 
 class BaseAgent:
     MODEL_BASED : bool
     def __init__(
             self,
+            env : Game,
             num_cards : int,
             num_actions : int,
             *args,
@@ -20,25 +23,12 @@ class BaseAgent:
         """
         self.num_actions: int = num_actions
         self.num_cards: int = num_cards
+        self.env : Game = env
         return
 
     @abstractmethod
-    def train(self):
-        """
-        Will Train or Plan for the agent based on its internal model or data.
-        """
+    def act(self, input_state: Any, *args, **kwargs) -> int:
         pass
-
-    @abstractmethod
-    def act(self, input_state: Any) -> int:
-        pass
-
-    @abstractmethod
-    def save_transition(self):
-        """
-        Save any transitions for learning.
-        """
-        return
     
     @abstractmethod
     def save(self, filepath: str, *args, **kwargs):
@@ -53,7 +43,22 @@ class BaseAgent:
         Load Agent model
         """
         pass
+
     def reset(self):
+        pass
+
+
+    @abstractmethod
+    def save_transition(self):
+        """
+        Save any transitions for learning.
+        """
+        return
+    @abstractmethod
+    def train(self):
+        """
+        Will Train or Plan for the agent based on its internal model or data.
+        """
         pass
     
 
@@ -78,15 +83,13 @@ class ModelFreeAgent(BaseAgent, ABC):
         """
         pass
 
-    
 
-
-class AgentList(List[BaseAgent]):
+class AgentList(list[BaseAgent]):
     """
     A list wrapper that holds multiple Actor objects.
     Inheriting from List[BaseAgent] tells the IDE that 'self' contains BaseAgents.
     """
-    def __init__(self, agents: Optional[List[BaseAgent]], *args, **kwargs):
+    def __init__(self, agents: None|list[BaseAgent], *args, **kwargs):
 
         # 1. Runtime Enforcement: Validate types immediately
         for i, agent in enumerate(agents):
@@ -104,7 +107,7 @@ class AgentList(List[BaseAgent]):
         return False
 
 
-    def act(self, observations: List[Any]) -> List[int]:
+    def act(self, observations: list[Any]) -> list[int]:
         """
         Queries all agents for their actions.
         """

@@ -1,13 +1,16 @@
-# dtde_bi.py
+# agents/model_based/dtde_bi.py
 import random
 import numpy as np
 import os
 import pickle
 from collections import defaultdict
-from typing import Dict, List, Optional
 
 from ..base_agent import ModelBasedAgent
-from tiny_game import DecPOMDP
+from tiny_game import (
+    DecPOMDP, MyHanabi, Game,
+    get_all_possible_histories, get_all_possible_states
+)
+
 
 class DTDE_BI_MB_Agent(ModelBasedAgent):
     """
@@ -17,156 +20,157 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
     """
     def __init__(
         self, 
+        env: Game,
         num_cards: int, 
-        num_actions: int, 
-        env: DecPOMDP,
-        # BI implies rationality, but we can add noise modeling if desired
-        partner_optimality: float = 1.0, # 1.0 = Assume Partner is Perfect, 0.0 = Random
+        num_actions: int,
+        agent_id : int,
         *args, **kwargs
     ):
-        super().__init__(num_cards, num_actions)
+        super().__init__(env, num_cards, num_actions)
         self.env = env
-        self.partner_optimality = partner_optimality
+        self.is_decpomdp = isinstance(self.env, DecPOMDP)
+        self.is_myhanabi = isinstance(self.env, MyHanabi)
+        self.agent_id = agent_id
+
         self.NULL_VALUE = -1
         
-        self.policy: Dict[tuple, int] = {}
-        self.v_values: Dict[tuple, float] = defaultdict(float)
+        # Cache observations for planning
+        self.all_histories = get_all_possible_histories(self.env)
+        self.all_histories = sorted(self.all_histories, key=lambda x: len(x[0]), reverse=True)
         
-        self.all_observations = self._generate_state_space()
-        self._init_tables(**kwargs)
+        self.max_hist_length : int = self.env.horizon
+        self.min_hist_length : int = 2 if self.is_decpomdp else 4
 
-    def _generate_state_space(self) -> List[tuple]:
-        observations = []
-        # P0 (Turn 1): (NULL, c1)
-        for c1 in range(self.num_cards):
-            observations.append((self.NULL_VALUE, c1))
-        # P1 (Turn 2): (c0, NULL, a0)
-        for c0 in range(self.num_cards):
-            for a0 in range(self.num_actions):
-                observations.append((c0, self.NULL_VALUE, a0))
-        return observations
+        self.legal_actions_cache : dict[tuple, tuple]= {}
+        self.worlds_cache: dict[tuple, list[tuple]] = {}
+        
+        # Tables necessary
+        self.policy: dict[tuple, int] = {}
+        self.v_values: dict[tuple, float] = defaultdict(float)        
 
-    def _init_tables(self, model_path: Optional[str] = None, *args, **kwargs):
-        if model_path is not None:
-            self.load(model_path)
-            return
-        for obs in self.all_observations:
-            self.v_values[obs] = 0.0
-            self.policy[obs] = random.randint(0, self.num_actions - 1)
+        self._init_tables()
+        return
+
+    def _init_tables(self):
+        for history, done, turn_id, reward in self.all_histories:
+            if done:
+                self.v_values[history] = reward
+                possible_actions = ()
+            else:
+                self.v_values[history] = 0.0
+                if self.is_decpomdp:
+                    possible_actions = tuple(range(self.num_actions))
+                else:
+                    _, possible_actions = self.env.num_legal_actions(history)
+                self.legal_actions_cache[history] = possible_actions
+                self.policy[history] = random.choice(possible_actions)
+        return
+    
+    def calc_expected_reward(self, obs)->float:
+        return 0.0
 
     def train(self) -> float:
         """
         Executes Backward Induction (Single Pass).
-        1. Solve P1 (Last Mover).
-        2. Solve P0 (First Mover) using P1's derived values.
         """
         max_delta = 0.0
         
-        # Split observations by time-step/role
-        p1_obs_list = [o for o in self.all_observations if len(o) == 3] # Last Mover
-        p0_obs_list = [o for o in self.all_observations if len(o) == 2] # First Mover
+        # Sort observation longest first
+        for i, (obs, done, _, _) in enumerate(self.all_histories):
+            if done:
+                continue
+            #if turn_id != self.agent_id:
+            #    continue
 
-        # --- STEP 1: SOLVE LAST MOVER (P1) ---
-        # P1's value depends only on the Payoff Matrix (Leaf Nodes)
-        for obs in p1_obs_list:
-            delta = self._optimize_node(obs, is_last_mover=True)
-            if delta > max_delta: max_delta = delta
-
-        # --- STEP 2: SOLVE FIRST MOVER (P0) ---
-        # P0's value depends on P1's expected response
-        for obs in p0_obs_list:
-            delta = self._optimize_node(obs, is_last_mover=False)
-            if delta > max_delta: max_delta = delta
-            
+            delta = self._optimize_node(obs)
+            if delta > max_delta:
+                max_delta = delta
         return max_delta
 
-    def _optimize_node(self, obs, is_last_mover) -> float:
-        old_v = self.v_values[obs]
-        
-        q_values = np.zeros(self.num_actions)
-        for action in range(self.num_actions):
-            q_values[action] = self._calculate_expected_return(obs, action, is_last_mover)
-            
-        best_val = np.max(q_values)
-        best_actions = np.flatnonzero(q_values == best_val)
-        best_action = int(np.random.choice(best_actions))
-        
-        self.v_values[obs] = best_val
-        self.policy[obs] = best_action
-        
-        return abs(best_val - old_v)
+    def _optimize_node(self, hist) -> float:
+        old_val = self.v_values[hist]
+        legal_actions = self.legal_actions_cache[hist]
 
-    def _calculate_expected_return(self, obs, action, is_last_mover):
-        total_payoff = 0.0
-        scenarios = 0
+        worlds = self._get_consistent_worlds(hist)
         
-        # Ranges for Hidden Cards
-        if is_last_mover: # P1 sees (c0, NULL, a0)
-            c0_fixed = obs[0]
-            range_c0 = [c0_fixed]
-            range_c1 = range(self.num_cards) # Hidden c1
-            a0_prev = obs[2]
-        else: # P0 sees (NULL, c1)
-            range_c0 = range(self.num_cards) # Hidden c0
-            c1_fixed = obs[1]
-            range_c1 = [c1_fixed]
+        # Initialize with -infinity so any valid path overwrites it
+        best_value = -float('inf')
+        best_action = legal_actions[0]
 
-        for c0 in range_c0:
-            for c1 in range_c1:
-                if is_last_mover:
-                    # Immediate Payoff
-                    total_payoff += self.env.payoffs[c0, c1, a0_prev, action]
-                    scenarios += 1
+        for action in legal_actions:
+            total = 0.0
+            valid_worlds = 0
+
+            for world_state in worlds:                
+                # A. Reset Env to this specific world
+                self.env.reset(list(world_state))
+
+                # B. Take Step
+                try:
+                    self.env.step(action)
+                except ValueError:
+                    # Action invalid in this specific world 
+                    continue
+                valid_worlds += 1
+                # C. Check Consequence
+                if self.env.is_terminal():
+                    total += self.env.payoff()
                 else:
-                    # P0 predicting P1.
-                    # We solve the subgame for P1 on the fly.
-                    # P1 sees: (c0, NULL, action)
-                    
-                    # 1. Calculate P1's Q-values for this specific hypothetical state
-                    p1_q_values = []
-                    for a1 in range(self.num_actions):
-                        # P1 calculates their own EV over hidden c1
-                        p1_ev_sum = 0
-                        for c1_hyp in range(self.num_cards):
-                            p1_ev_sum += self.env.payoffs[c0, c1_hyp, action, a1]
-                        p1_q_values.append(p1_ev_sum / self.num_cards)
-                    
-                    # 2. Determine P1's choice based on Rationality
-                    best_p1_val = max(p1_q_values)
-                    avg_p1_val = sum(p1_q_values) / len(p1_q_values)
-                    
-                    # E[V] = (Optimality * Best) + ((1-Optimality) * Avg)
-                    # Note: We track the VALUE here, but we need the ACTION to get the REAL payoff 
-                    # for the actual (c0, c1) pair we are iterating in the outer loop.
-                    
-                    # Since P1 optimizes for average c1, but we hold a specific c1 in this loop:
-                    # We find the set of optimal actions for P1
-                    best_p1_actions = [i for i, v in enumerate(p1_q_values) if v == best_p1_val]
-                    
-                    # Expected payoff for P0 is the average payoff of those actions given REAL c1
-                    
-                    # Rational Component
-                    rational_payoff_sum = 0
-                    for a1_opt in best_p1_actions:
-                        rational_payoff_sum += self.env.payoffs[c0, c1, action, a1_opt]
-                    rational_component = rational_payoff_sum / len(best_p1_actions)
-                    
-                    # Random Component
-                    random_payoff_sum = 0
-                    for a1_rnd in range(self.num_actions):
-                        random_payoff_sum += self.env.payoffs[c0, c1, action, a1_rnd]
-                    random_component = random_payoff_sum / self.num_actions
-                    
-                    expected_val = (self.partner_optimality * rational_component) + \
-                                   ((1 - self.partner_optimality) * random_component)
-                                   
-                    total_payoff += expected_val
-                    scenarios += 1
-                    
-        return total_payoff / max(1, scenarios)
+                    next_history = tuple(self.env.history)
+                    next_obs = self._mask_state(next_history)
+                    total += self.v_values[next_obs]
 
-    def act(self, input_state: tuple, exploit: bool = False) -> int:
-        return self.policy.get(input_state, 0)
+            if valid_worlds > 0:
+                avg = total / valid_worlds
+                if avg > best_value:
+                    best_value = avg
+                    best_action = action
+
+        self.policy[hist] = best_action
+        self.v_values[hist] = best_value
+        return abs(old_val - best_value)
+
+    def _get_consistent_worlds(self, obs: tuple) -> list[tuple]:
+        """
+        Returns all possible ground-truth histories consistent with the observation.
+        Uses caching for speed.
+        """
+        if obs in self.worlds_cache:
+            return self.worlds_cache[obs]
+        
+        consistent = []
+        
+        all_deals = self.env.start_states()
+        
+        # Extract the visible part of the deal from obs
+        if self.is_decpomdp:
+            obs_deal = obs[:2]
+            obs_history = obs[2:]
+            deal_len = 2
+        else:
+            obs_deal = obs[:4]
+            obs_history = obs[4:]
+            deal_len = 4
+            
+        for deal in all_deals:
+            match = True
+            for i in range(deal_len):
+                # If obs has -1, any card is valid.
+                if obs_deal[i] != -1 and obs_deal[i] != deal[i]:
+                    match = False
+                    break
+            
+            if match:
+                # Construct the full state candidate
+                candidate_state = tuple(list(deal) + list(obs_history))
+                consistent.append(candidate_state)
+        
+        self.worlds_cache[obs] = consistent
+        return consistent
+
+    def act(self, input_state: tuple, exploit: bool = False, *args, **kwargs) -> int:
+        action = self.policy[input_state]
+        return action
 
     def save(self, filepath: str):
         data = {"policy": self.policy, "v_values": dict(self.v_values)}
@@ -192,3 +196,31 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
     
     def save_transition(self, *args): pass
     def reset(self): pass
+
+
+    def _mask_state(self, state: tuple) -> tuple:
+        """
+        Converts a full ground-truth state/history into the observation 
+        seen by the player whose turn it IS.
+        """
+        s_list = list(state)
+        if self.is_decpomdp:
+            # history: [c1, c2, a1, a2...]
+            # Turn: if len(actions) % 2 == 0 -> P0.
+            # actions start at index 2.
+            num_actions = len(state) - 2
+            p0_turn = (num_actions % 2 == 0)
+            if p0_turn:
+                s_list[0] = -1
+            else:
+                s_list[1] = -1
+        elif self.is_myhanabi:
+            # history: [c0a, c0b, c1a, c1b, a1, a2...]
+            num_actions = len(state) - 4
+            p0_turn = (num_actions % 2 == 0)
+            
+            if p0_turn:
+                s_list[0] = -1; s_list[1] = -1
+            else:
+                s_list[2] = -1; s_list[3] = -1
+        return tuple(s_list)

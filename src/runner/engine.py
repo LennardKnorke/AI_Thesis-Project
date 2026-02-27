@@ -4,9 +4,9 @@ from tqdm import tqdm
 from copy import deepcopy
 
 from agents import AgentList
-from tiny_game import DecPOMDP, OPTIMAL_RETURNS
+from tiny_game import Game, OPTIMAL_RETURNS, MyHanabi, DecPOMDP
 
-def run_training(env: DecPOMDP, agents: AgentList, *args, **kwargs) -> tuple[np.ndarray, np.ndarray, AgentList]:
+def run_training(env: Game, agents: AgentList, *args, **kwargs) -> tuple[np.ndarray, np.ndarray, AgentList]:
     """
     Runs either model-free training or model-based planning based on the type of agents provided.
     """
@@ -20,9 +20,10 @@ def run_training(env: DecPOMDP, agents: AgentList, *args, **kwargs) -> tuple[np.
 
 
 def run_model_free_training(
-        env: DecPOMDP, 
+        env: Game, 
         agents: AgentList,
         train_episodes: int = 100_000,
+        auto_break : bool = False,
         *args, **kwargs
 ) -> tuple[np.ndarray, np.ndarray, AgentList]:
     """
@@ -49,14 +50,14 @@ def run_model_free_training(
                 "Rew": f"{avg_test_reward:.2f}"
             })
 
-        if avg_test_reward >= OPTIMAL_RETURNS[kwargs.get('game_name')]:
+        if auto_break and avg_test_reward >= OPTIMAL_RETURNS[kwargs.get('game_name')]:
             break
 
     return np.array(reward_results), np.array(loss_results), agents
 
 
 def run_model_based_planning(
-    env: DecPOMDP, 
+    env: Game, 
     agents: AgentList,
     max_iterations: int = None,
     convergence_threshold: float = 0.0001,
@@ -139,17 +140,19 @@ def run_model_based_planning(
     return best_results
 
 
-def test_on_all_start_states(env: DecPOMDP, agents: AgentList) -> float:
+def test_on_all_start_states(env: Game, agents: AgentList) -> float:
     start_states = env.start_states()
     total_test_reward = 0.0
     for start_state in start_states:
-        episode_reward = run_episode(env, agents, start_state=start_state, test_episode=True)
+        episode = run_episode(env, agents, start_state=start_state, test_episode=True)
+        total_history = episode[:-1]
+        episode_reward = episode[-1]
         total_test_reward += episode_reward
     return total_test_reward / len(start_states)
 
 
 def run_episode(
-    env: DecPOMDP, 
+    env: Game, 
     agents: AgentList,
     start_state: list | None = None,
     test_episode: bool = False,
@@ -165,23 +168,29 @@ def run_episode(
     while not done:
         # Determine current player
         # Tiny Hanabi: Start (Len 2) -> P0. Middle (Len 3) -> P1.
-        if len(env.context()) == 2:
+        if len(env.context()) % 2 == 0:
             player_id = 0
-        elif len(env.context()) == 3:
-            player_id = 1
         else:
-            # Should not happen if loop checks 'done' correctly, but safe fallback
-            break
+            player_id = 1
+
             
         agent = agents[player_id]
 
         # Construct Observation (Masked)
-        # Note: env.context() returns tuples in original game, cast to list for mutability
         observation = list(env.context())
-        observation[player_id] = -1 # Mask Own Card
+        # Mask own card(2)
+        if isinstance(env, MyHanabi):
+            if player_id == 0:
+                observation[0] = -1
+                observation[1] = -1
+            else:
+                observation[2] = -1
+                observation[3] = -1
+        else:
+            observation[player_id] = -1 # Mask Own Card
         observation = tuple(observation) # Cast back for Agent Act
         
-        action = agent.act(observation)
+        action = agent.act(observation, exploit = test_episode)
         env.step(action)
 
         # Build Next Observation for Training Storage
@@ -203,4 +212,4 @@ def run_episode(
                 done
             )
             
-    return total_reward
+    return env.episode()

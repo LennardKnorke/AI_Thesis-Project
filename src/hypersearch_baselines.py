@@ -4,10 +4,9 @@ import numpy as np
 import pandas as pd
 import os
 from tqdm import tqdm
-from typing import Tuple, Dict, Union, Any, List, Optional
 
 # Own Imports
-from tiny_game import GAMES, Settings, GameNames, DecPOMDP, get_game
+from tiny_game import GAMES, Settings, GameNames, DecPOMDP, get_game, get_game_Rework
 from runner import run_training
 from config import *
 
@@ -35,7 +34,7 @@ def hypersearch_algorithm(exp: Experiment,*args, **kwargs) -> None:
     pbar = tqdm(range(len(exp.param_list)))
     
     for idx in pbar:
-        params : Dict[str, Any] = exp.param_list[idx]
+        params : dict[str, Any] = exp.param_list[idx]
 
         results_file = os.path.join(results_dir, f"{idx}_results.csv")
         
@@ -47,7 +46,7 @@ def hypersearch_algorithm(exp: Experiment,*args, **kwargs) -> None:
         # START - TRAIN PARAMS ON ALL GAMES
         for game_name in GAMES:
             # Set up Game Instance
-            ENV = get_game(GameNames(game_name), Settings.decpomdp, normalize=False)
+            ENV = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=True)
 
             # Set up Agents
             AGENTS = exp.make_agents(ENV, params)

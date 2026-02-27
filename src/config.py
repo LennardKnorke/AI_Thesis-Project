@@ -1,14 +1,15 @@
 # config.py
 import itertools
+import os
+import json
 import pandas as pd
-from typing import List, Dict, Type, Union, Any
-
+from typing import Any
 from tiny_game import GameNames, DecPOMDP
 
 from agents import *
 
 # Episode Macros
-TRAINING_EPISODES_HYPERSEARCH = 10_000
+TRAINING_EPISODES_HYPERSEARCH = 1_000
 TRAINING_EPISODES_FINAL = 100_000
 
 # Directory Macros
@@ -22,9 +23,9 @@ class Experiment:
     """
     def __init__(self, 
                  name: str,
-                 agent_class: Type[BaseAgent],
-                 param_list: List[Dict[str, Any]],
-                 list_class: Type[AgentList] = AgentList):
+                 agent_class: type[BaseAgent],
+                 param_list: list[dict[str, Any]],
+                 list_class: type[AgentList] = AgentList):
         """
         Args:
             name: Name of the experiment (used for folder naming).
@@ -40,7 +41,7 @@ class Experiment:
 
     def make_agents(self, 
                     env : DecPOMDP, 
-                    params: Dict[str, Any]) -> AgentList:
+                    params: dict[str, Any]) -> AgentList:
         """
         Factory method to instantiate the agents for a specific environment and parameter set.
         Automatically handles Model-Based vs Model-Free requirements (passing 'env').
@@ -58,15 +59,14 @@ class Experiment:
         list_name = self.list_class.__name__
         is_model_based_list = "VI" in list_name or "BI" in list_name
 
-        if is_model_based_agent or is_model_based_list:
-            run_args['env'] = env
+        run_args['env'] = env
 
         # Finally Set Up Agents
         if self.list_class is AgentList:
             # --- DECENTRALIZED (Independent) ---
             agents = [
-                self.agent_class(**run_args),
-                self.agent_class(**run_args)
+                self.agent_class(agent_id = 0,**run_args),
+                self.agent_class(agent_id = 1, **run_args)
             ]
             return AgentList(agents)
         else:
@@ -84,7 +84,7 @@ def generate_param_grid(grid_dict):
     return [dict(zip(keys, v)) for v in itertools.product(*values)]
 
 # DTDE_QSarsa_MF
-DTDE_QSarsa_MF_grid = {
+DTDE_QLearning_MF_grid = {
     'lr': [0.1, 0.01, 0.001],
     'gamma': [0.99],
     'batch_size': [32, 64],
@@ -93,7 +93,7 @@ DTDE_QSarsa_MF_grid = {
     'epsilon_min': [0.05, 0.1],
     'epsilon_decay': [0.999, 0.9995, 0.9999]
 }
-DTDE_QSarsa_MF_params = generate_param_grid(DTDE_QSarsa_MF_grid)
+DTDE_QLearning_MF_params = generate_param_grid(DTDE_QLearning_MF_grid)
 
 # CTDE_VDN_MF
 CTDE_VDN_MF_grid = {
@@ -109,28 +109,23 @@ CTDE_VDN_MF_params = generate_param_grid(CTDE_VDN_MF_grid)
 
 # DTDE_BI_MB
 DTDE_BI_MB_params = [
-    {"max_iterations": 1, "partner_optimality": 1.0},
-    {"max_iterations": 10, "partner_optimality": 1.0},
-    {"max_iterations": 100, "partner_optimality": 1.0},
-]
+    {"max_iterations": 1}, 
+    {"max_iterations": 5},
+] 
 
 # CTDE_BI_MB
 CTDE_BI_MB_params = [
     {"max_iterations": 1}, 
-    {"max_iterations": 10}, 
-    {"max_iterations": 100},
-
+    {"max_iterations": 5},
 ] 
-
-
 
 
 # Define Experiments List
 BASELINE_EXPERIMENTS = [
     Experiment(
-        name="DTDE QSarsa",
-        agent_class=DTDE_QSarsa_MF_Agent,
-        param_list=DTDE_QSarsa_MF_params,
+        name="DTDE QLearning",
+        agent_class=DTDE_QLearning_MF_Agent,
+        param_list=DTDE_QLearning_MF_params,
         list_class=AgentList
     ),
     Experiment(
@@ -153,6 +148,51 @@ BASELINE_EXPERIMENTS = [
     )
 ]
 
+NUM_AGENT_TYPES = len(BASELINE_EXPERIMENTS)
+
+def load_best_params(agent_name : str):
+    agent_name_str = agent_name.replace(" ", "_")
+    best_params_path = os.path.join(RESULTS_DIR, agent_name_str, "best_params.json")
+
+    params_list = []
+
+    with open(best_params_path) as f:
+        data = json.load(f)
+        params_list.append(data)
+
+    return params_list
+
+
+def load_best_baselinesagents():
+    experiments = [
+        Experiment(
+            name="DTDE QLearning",
+            agent_class=DTDE_QLearning_MF_Agent,
+            param_list=load_best_params("DTDE QLearning"),
+            list_class=AgentList
+        ),
+        Experiment(
+            name="CTDE VDN",
+            agent_class=CTDE_VDN_MF_Agent,
+            param_list=load_best_params("CTDE VDN"),
+            list_class=CTDE_VDN_MF_List
+        ),
+        Experiment(
+            name="DTDE BI",
+            agent_class=DTDE_BI_MB_Agent,
+            param_list=load_best_params("DTDE BI"),
+            list_class=AgentList
+        ),
+        Experiment(
+            name="CTDE BI",
+            agent_class=CTDE_BI_MB_Agent,
+            param_list=load_best_params("CTDE BI"),
+            list_class=CTDE_BI_MB_List
+        )
+    ]
+    return experiments
+
+
 # --- WORLD MODEL PARAMETERS ---
 tom_worldmodel_grid = {
     "char_dim": [16, 32],
@@ -162,13 +202,11 @@ tom_worldmodel_grid = {
     "optimizer": ["Adam", "RMSprop"],
     "lr": [0.001, 0.01]
 }
-tom_worldmodel_params : List[Dict[str, Union[float, str, int]]]= generate_param_grid(tom_worldmodel_grid)
+tom_worldmodel_params : list[dict[str, float | str | int]]= generate_param_grid(tom_worldmodel_grid)
 
 
 # --- THEORY OF MIND AGENT HYPERPARAMETERS ---
 DTDE_ToMBI_params = [
     {"max_iterations": 1}, 
-    {"max_iterations": 10}, 
-    {"max_iterations": 100},
-
+    {"max_iterations": 5},
 ] 

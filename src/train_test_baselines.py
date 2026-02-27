@@ -1,23 +1,22 @@
 # train_test_baselines.py
 import os
 import json
-from typing import Dict, Any, Union, List
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from tiny_game import GAMES, Settings, GameNames, get_game, DecPOMDP
+from tiny_game import GAMES, Settings, GameNames, get_game, DecPOMDP, MyHanabi, get_game_Rework
 from runner import run_training
 from agents import *
 from config import *
 
-def load_best_params(agent_name: str) -> List[Dict[str, Any]]:
+def load_best_params(agent_name: str) -> list[dict[str, Any]]:
     """
-    Reads from: HyperSearchResults/{Agent_Name}/best_params.json
+    Reads from: Results/{Agent_Name}/best_params.json
     """
     folder_name = agent_name.replace(" ", "_")
-    path = os.path.join(HYPERSEARCH_RESULTS_DIR, folder_name, "best_params.json")
+    path = os.path.join(RESULTS_DIR, folder_name, "best_params.json")
     
     if not os.path.exists(path):
         return []
@@ -28,9 +27,9 @@ def load_best_params(agent_name: str) -> List[Dict[str, Any]]:
 
 AGENT_REGISTRY = [
     Experiment(
-        name="DTDE QSarsa",
-        agent_class=DTDE_QSarsa_MF_Agent,
-        param_list=load_best_params("DTDE QSarsa"),
+        name="DTDE QLearning",
+        agent_class=DTDE_QLearning_MF_Agent,
+        param_list=load_best_params("DTDE QLearning"),
         list_class=AgentList
     ),
     Experiment(
@@ -61,7 +60,7 @@ def save_final_model(
 ):
     """
     Saves the trained models into Results/{Agent_Name}/
-    Prefixes files with G_{GameName}_...
+    Prefixes files with G_{GameName}_agent_{agent id}.pkl...
     """
     folder_name = agent_name.replace(" ", "_")
     agent_save_dir = os.path.join(RESULTS_DIR, folder_name)
@@ -83,7 +82,6 @@ def save_final_model(
 
 def train_test_baselines(): 
     agent_experiments = tqdm(AGENT_REGISTRY, desc="Agent Types")
-    print("\nTraining and Testing best Baseline Agents...")
     for exp in agent_experiments:
         if len(exp.param_list) != 1:
             print(f"[WARNING] Skipping {exp.name}: no best_params.json found")
@@ -102,7 +100,7 @@ def train_test_baselines():
         # Iterate over All Games
         for game_name in GAMES:
             # Setup Environment
-            game = get_game(GameNames(game_name), Settings.decpomdp, normalize=False)
+            game = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=False)
             
             # Setup Agents
             agents = exp.make_agents(game, params)
@@ -129,3 +127,4 @@ def train_test_baselines():
         # 6. Save Aggregated Results
         results_df = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in results_cache.items()]))
         results_df.to_csv(final_csv_path, index=False)
+    return
