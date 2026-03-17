@@ -85,10 +85,10 @@ def generate_param_grid(grid_dict):
 
 # DTDE_QSarsa_MF
 DTDE_QLearning_MF_grid = {
-    'lr': [0.1, 0.01, 0.001],
+    'lr': [0.01, 0.001],
     'gamma': [0.99],
-    'batch_size': [32, 64],
-    'buffer_size': [100, 500, 1_000],
+    'batch_size': [64],
+    'buffer_size': [250, 500, 1_000],
     'epsilon_start': [1.0],
     'epsilon_min': [0.05, 0.1],
     'epsilon_decay': [0.999, 0.9995, 0.9999]
@@ -97,10 +97,10 @@ DTDE_QLearning_MF_params = generate_param_grid(DTDE_QLearning_MF_grid)
 
 # CTDE_VDN_MF
 CTDE_VDN_MF_grid = {
-    "lr": [0.1, 0.01, 0.001],
+    "lr": [0.01, 0.001],
     'gamma': [0.99],
-    "batch_size": [32, 64],
-    'buffer_size': [100, 500, 1_000],
+    "batch_size": [64],
+    'buffer_size': [250, 500, 1_000],
     "epsilon_start": [1.0],
     'epsilon_min': [0.05, 0.1],
     "epsilon_decay": [0.999, 0.9995, 0.9999]

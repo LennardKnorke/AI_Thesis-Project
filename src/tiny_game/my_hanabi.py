@@ -11,9 +11,10 @@ class MyHanabi(Game):
     """
     def __init__(self, payoffs: np.ndarray = None, optimal_return: float = 4.0, normalize : bool = False):
         # Ignore payoffs and optimal return parameter
-        self.num_cards = 5          # 5 unique cards in game (0, 1, 2, 3, 4)
+        self.num_cards = 4          # 4 unique cards in game (0, 1, 2, 3)
         self.cards_in_hand = 2          # Two cards per player
-
+        self.NO_CARD = 4
+        self.NO_ACTION = 4
         self.num_actions = 4        # (PlayC0, PlayC1, DelcareSaveC0, DeclareSaveC1)
         self.normalize = normalize
 
@@ -41,6 +42,8 @@ class MyHanabi(Game):
                         start_cards = (p1_c1, p1_c2, p2_c1, p2_c2)
                         # Now duplicate cards allowed
                         if len(start_cards) != len(set(start_cards)): continue
+                        # Avoid duplicates
+                        if start_cards in start_states: continue
                         start_states.append(start_cards)
         return start_states
     
@@ -106,10 +109,11 @@ class MyHanabi(Game):
             # Error catch - Card already Played
             if card_played in self.current_pile:
                 raise ValueError("Invalid action provided! Card Already Played. Can't play card again.")
-            
+
+            obs = (action, card_played)
             # Put card in pile and save action in history
             self.current_pile.append(card_played)
-            self.history.append(action)
+            #self.history.append(action)
 
         # Declares Partner Card as Save
         elif self.cards_in_hand <= action < self.cards_in_hand * 2:
@@ -125,19 +129,18 @@ class MyHanabi(Game):
                 raise ValueError("Invalid action provided! Card already played. Can't declare card as save.")
             
             # Save action - No card added to pile
-            self.history.append(action)
-        
+            obs = (action, self.NO_CARD)
+            #self.history.append(action)
         # Invalid action provided
         else:
             raise ValueError("Invalid action provided! Action index out of bound.")
         self.timestep += 1
+        self.history.append(obs)
         return
     
-    def num_legal_actions(self, history : tuple|None = None):
-        if history is None:
+    def num_legal_actions(self, full_history : tuple|None = None):
+        if full_history is None:
             full_history = self.history
-        else:
-            full_history = history
         
         actions_taken = full_history[4:]
         
@@ -146,6 +149,8 @@ class MyHanabi(Game):
         p1_hand = [True, True]
         is_p0_turn = True
         for a in actions_taken:
+            if type(a) == tuple:
+                a = a[0]
             if a < 2:
                 if is_p0_turn:
                     p0_hand[a] = False
@@ -193,24 +198,31 @@ class MyHanabi(Game):
             assert len(history) >= 4
             assert not -1 in history[:4], "Can't initialize with unknown cards"
             start_state_list = history[:4]
+
             self.history = list(history)
+
             self.start_state = tuple(start_state_list)
+
             self.cards_p0 = tuple(start_state_list[:2])
-            self.cards_p1 = tuple(start_state_list[2:4])
+            self.cards_p1 = tuple(start_state_list[2:])
 
             self.current_pile.clear()
             self.timestep = 0
 
-            actions = self.history[4:]
+            observations = self.history[4:]
             p0_turn = True 
             
-            for action in actions:
+            for action, card_revealed in observations:
                 # Play Actions (0 or 1)
                 if action < 2:
                     if p0_turn:
                         card = self.cards_p0[action]
                     else:
                         card = self.cards_p1[action]
+
+                    if card != card_revealed:
+                        raise ValueError("Faulty History Provided. Revealed card + card on hand do not match")
+                    
                     self.current_pile.append(card)
                 
                 # Turn passes

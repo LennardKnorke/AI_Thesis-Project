@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from tiny_game import GAMES, Settings, GameNames, get_game, DecPOMDP, MyHanabi, get_game_Rework
+from tiny_game import GAMES, Settings, GameNames, DecPOMDP, MyHanabi, get_game_Rework
 from runner import run_training
 from agents import *
 from config import *
@@ -100,7 +100,7 @@ def train_test_baselines():
         # Iterate over All Games
         for game_name in GAMES:
             # Setup Environment
-            game = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=False)
+            game = get_game_Rework(GameNames(game_name), normalize=True)
             
             # Setup Agents
             agents = exp.make_agents(game, params)

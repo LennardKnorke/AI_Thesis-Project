@@ -5,7 +5,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from tiny_game import Game, DecPOMDP, MyHanabi
+from tiny_game import Game, DecPOMDP, MyHanabi, get_all_possible_histories
 
 
 class BaseAgent:
@@ -64,6 +64,20 @@ class BaseAgent:
 
 class ModelBasedAgent(BaseAgent, ABC):
     MODEL_BASED = True
+    def __init__(self, env : Game, num_card : int, num_actions:int):
+        super.__init__(env, num_card, num_actions)
+        self.is_decpomdp = isinstance(self.env, DecPOMDP)
+        self.is_myhanabi = isinstance(self.env, MyHanabi)
+
+        self.max_hist_length : int = self.env.horizon
+        self.min_hist_length : int = 2 if self.is_decpomdp else 4
+
+        all_private_histories, all_joint_histories = get_all_possible_histories(self.env)
+        self.all_private_histories = sorted(all_private_histories, key=lambda x: len(x[0]), reverse=True)
+        self.all_joint_histories = sorted(all_joint_histories, key=lambda x: len(x[0]), reverse=True)
+    
+
+
     @abstractmethod
     def train(self):
         """

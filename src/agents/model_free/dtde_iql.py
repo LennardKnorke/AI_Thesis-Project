@@ -57,7 +57,7 @@ class DTDE_QLearning_MF_Agent(ModelFreeAgent):
         if isinstance(self.env, DecPOMDP):
             return np.ones(self.num_actions, dtype=bool)
         else: # MyHanabi
-            mask, _ = self.env.num_legal_actions(history=obs)
+            mask, _ = self.env.num_legal_actions(full_history=obs)
             return np.array(mask, dtype=bool)
 
     def act(self, input_state: tuple[int], exploit=False) -> int:

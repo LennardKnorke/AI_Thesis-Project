@@ -24,23 +24,14 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         num_cards: int, 
         num_actions: int,
         agent_id : int,
+        gamma : float = 0.99,
         *args, **kwargs
     ):
         super().__init__(env, num_cards, num_actions)
-        self.env = env
-        self.is_decpomdp = isinstance(self.env, DecPOMDP)
-        self.is_myhanabi = isinstance(self.env, MyHanabi)
         self.agent_id = agent_id
-
         self.NULL_VALUE = -1
-        
-        # Cache observations for planning
-        self.all_histories = get_all_possible_histories(self.env)
-        self.all_histories = sorted(self.all_histories, key=lambda x: len(x[0]), reverse=True)
-        
-        self.max_hist_length : int = self.env.horizon
-        self.min_hist_length : int = 2 if self.is_decpomdp else 4
 
+        # Cache observations for planning
         self.legal_actions_cache : dict[tuple, tuple]= {}
         self.worlds_cache: dict[tuple, list[tuple]] = {}
         
@@ -52,7 +43,7 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         return
 
     def _init_tables(self):
-        for history, done, turn_id, reward in self.all_histories:
+        for history, done, turn_id, reward in self.all_private_histories:
             if done:
                 self.v_values[history] = reward
                 possible_actions = ()
@@ -76,11 +67,11 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         max_delta = 0.0
         
         # Sort observation longest first
-        for i, (obs, done, _, _) in enumerate(self.all_histories):
+        for i, (obs, done, turn_id, reward) in enumerate(self.all_private_histories):
             if done:
                 continue
-            #if turn_id != self.agent_id:
-            #    continue
+            if turn_id != self.agent_id:
+                continue
 
             delta = self._optimize_node(obs)
             if delta > max_delta:
@@ -103,28 +94,31 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
 
             for world_state in worlds:                
                 # A. Reset Env to this specific world
-                self.env.reset(list(world_state))
-
                 # B. Take Step
                 try:
+                    self.env.reset(list(world_state))
                     self.env.step(action)
                 except ValueError:
                     # Action invalid in this specific world 
                     continue
                 valid_worlds += 1
+
                 # C. Check Consequence
                 if self.env.is_terminal():
                     total += self.env.payoff()
-                else:
-                    next_history = tuple(self.env.history)
-                    next_obs = self._mask_state(next_history)
-                    total += self.v_values[next_obs]
+                    continue
 
-            if valid_worlds > 0:
-                avg = total / valid_worlds
-                if avg > best_value:
-                    best_value = avg
-                    best_action = action
+                next_history = tuple(self.env.history)
+                next_obs = self._mask_state(next_history)
+                total += self.v_values[next_obs]
+
+            if valid_worlds == 0:
+                continue
+
+            avg = total / valid_worlds
+            if avg > best_value:
+                best_value = avg
+                best_action = action
 
         self.policy[hist] = best_action
         self.v_values[hist] = best_value
@@ -205,9 +199,6 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         """
         s_list = list(state)
         if self.is_decpomdp:
-            # history: [c1, c2, a1, a2...]
-            # Turn: if len(actions) % 2 == 0 -> P0.
-            # actions start at index 2.
             num_actions = len(state) - 2
             p0_turn = (num_actions % 2 == 0)
             if p0_turn:

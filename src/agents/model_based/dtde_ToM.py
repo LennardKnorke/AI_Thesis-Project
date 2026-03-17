@@ -16,71 +16,113 @@ from tiny_game import DecPOMDP, MyHanabi, Game, get_all_possible_states, get_all
 from ..base_agent import ModelBasedAgent, AgentList, BaseAgent
 
 
-def _encode_joint_observation(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool= False):
+
+def _encode_decPOMDP_jh(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool= False):
     vec = np.zeros(obs_dim, dtype=np.float32)
     num_actions = env.num_actions
     num_cards = env.num_cards
-    if isinstance(env, DecPOMDP):
-        if isinstance(obs, int):
-            vec[obs] = 1.0
-        else:
-            for i, o in enumerate(obs):
-                idx = num_actions + (i * num_cards) + o
-                vec[idx] = 1.0
+
+    if isinstance(obs, int):
+        # Encode observed action
+        vec[obs] = 1.0
     else:
-        if isinstance(obs, int):
-            vec[obs] = 1.0
-            if obs < 2:
-                own_cards = s0[:2] if is_p0_turn else s0[2:]
-                discarded_card = own_cards[obs]
-                player_offset = 0 if is_p0_turn else num_cards * 2
-                idx = num_actions + (num_cards * obs)+ player_offset + discarded_card
-                vec[idx] = 1.0
-        else:
-            for i, o in enumerate(obs):
-                idx = num_actions + (i * num_cards) + o
-                vec[idx] = 1.0
+        # encode initial cards
+        for i, o in enumerate(obs):
+            if o < 0: continue
+            idx = num_actions + (i * num_cards) + o
+            vec[idx] = 1.0
     return vec
 
+
+def _encode_MyHanabi_jh(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool= False):
+    vec = np.zeros(obs_dim, dtype=np.float32)
+    num_actions = env.num_actions
+    num_cards = env.num_cards
+
+    if len(obs) == 4:
+        # Initial Card Observation
+        for i, o in enumerate(obs):
+            idx = num_actions + (i * num_cards) + o
+            vec[idx] = 1.0
+    elif len(obs) == 2:
+        # Action observation
+        action = obs[0]
+        card_revealed = obs[1]
+        card_idx = num_actions + card_revealed
+
+        vec[action] = 1.0
+        vec[card_idx] = 1.0
+    else:
+        raise ValueError("Invalid Observation provided")
+    return vec
+
+
+def _encode_joint_observation(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool= False):
+    if isinstance(env, DecPOMDP):
+        return _encode_decPOMDP_jh(obs, obs_dim, env, s0, is_p0_turn)
+    elif isinstance(env, MyHanabi):
+        return _encode_MyHanabi_jh(obs, obs_dim, env, s0, is_p0_turn)
+    else:
+        raise ValueError("Faulty Environment")
+
+
+def _encode_decPOMDP_o(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool = False):
+    vec = np.zeros(obs_dim, dtype=np.float32)
+    num_actions = env.num_actions
+    num_cards = env.num_cards
+
+    if isinstance(obs, int):
+        vec[obs] = 1.0
+    else:
+        #o = obs[0]
+        for o in obs:
+            if o == -1: continue
+            vec[num_actions + o] = 1.0
+    
+    return vec
+
+
+def _encode_MyHanabi_o(obs : tuple[int,...], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool = False):
+    vec = np.zeros(obs_dim, dtype=np.float32)
+    num_actions = env.num_actions
+    num_cards = env.num_cards
+
+    num_cards_revealed = num_cards + 1
+    
+    if len(obs) == 4:
+        # Initial Card Observation
+        for i, o in enumerate(obs):
+            if o == -1: continue
+            idx = num_actions + num_cards_revealed + (i * num_cards) + o
+            vec[idx] = 1.0
+    elif len(obs) == 2:
+        # Action observation
+        action = obs[0]
+        card_revealed = obs[1]
+        card_idx = num_actions + card_revealed
+
+        vec[action] = 1.0
+        vec[card_idx] = 1.0
+    else:
+        raise ValueError("Invalid Observation provided")
+    return vec
 
 
 def _encode_observation(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool = False):
-    """
-    Encode observation from a player's perspective.
-    
-    For DecPOMDP:
-        - If tuple: initial card(s) seen from partner
-        - If int: action taken (which is also the observation)    
-    For MyHanabi:
-        - If tuple/list: initial cards (players see partner's cards)
-        - If int: action taken, which may reveal a card if it was a discard
-    """
-    vec = np.zeros(obs_dim, dtype=np.float32)
-    num_actions = env.num_actions
-    num_cards = env.num_cards
     if isinstance(env, DecPOMDP):
-        if isinstance(obs, int):
-            vec[obs] = 1.0
-        else:
-            o = obs[0]
-            vec[num_actions + o] = 1.0
+        return _encode_decPOMDP_o(obs, obs_dim, env, s0, is_p0_turn)
+    elif isinstance(env, MyHanabi):
+        return _encode_MyHanabi_o(obs, obs_dim, env, s0, is_p0_turn)
     else:
-        if isinstance(obs, int):
-            vec[obs] = 1.0
-            if obs < 2:
-                own_cards = s0[:2] if is_p0_turn else s0[2:]
-                discarded_card = own_cards[obs]
-                idx = num_actions + (num_cards * obs) + discarded_card
-                vec[idx] = 1.0
-        else:
-            for i, o in enumerate(obs):
-                idx = num_actions + (i * num_cards) + o
-                vec[idx] = 1.0
-    return vec
+        raise ValueError("Faulty Environment")
 
 
 def _encode_action(action : int, action_dim : int):
     vec = np.zeros(action_dim, dtype=np.float32)
+    #if isinstance(action, (list, tuple)):
+    #    a = action[0]
+    #else:
+    #    a = action
     vec[action] = 1.0
     return vec
 
@@ -164,7 +206,8 @@ class ToM_WorldModel(nn.Module):
                  past_episode_context : int = 5,
                  char_embed_dim : int = 32,
                  mental_embed_dim : int = 16,
-                 trunk_dim : int = 64):
+                 trunk_dim : int = 64,
+                 *args, **kwargs):
         super().__init__()       
         # 1. Sub-Nets
         self.char_net = CharacterNet(joint_obs_dim, char_embed_dim, num_agent_types)
@@ -228,498 +271,236 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
         env: Game,
         num_cards: int, 
         num_actions: int, 
-        world_model: ToM_WorldModel, # Pre-trained ToMnet
-        world_model_config: dict[str, Any], # Config to extract feat_dim, max_seq_len, etc.
+        world_model: ToM_WorldModel,
+        world_model_config: dict[str, Any],
+        ensemble : np.ndarray,
         device: str = "cpu",
-        gamma: float = 0.99, # Discount factor for planning
+        gamma: float = 0.99,
         *args, **kwargs
     ):
         super().__init__(env, num_cards, num_actions)
+        self.device = device
         self.is_decpomdp = isinstance(self.env, DecPOMDP)
         self.is_myhanabi = isinstance(self.env, MyHanabi)
-        self.world_model = world_model.to(device)
-        self.world_model.eval() # Set to eval mode for inference
-        self.device = device
-        self.gamma = gamma
-
-        # Relevant for indexeing
-        self.num_cards = self.env.num_cards
-        self.num_actions = self.env.num_actions
         self.num_cards_in_hand = 1 if self.is_decpomdp else 2
 
+        self.world_model = world_model.to(device)
+        self.world_model.eval() # Set to eval mode for inference
+
+        self.ensemble : np.ndarray = ensemble
+        self.ensemble_tensor = torch.tensor(
+            ensemble,
+            dtype=torch.float32,
+            device=device
+        ).unsqueeze(0)
+
+        self.past_episode_context = ensemble.shape[0]
+
+        self.gamma = gamma
+
         # Extract World Model configuration parameters
-        self.feat_dim = world_model_config['feat_dim']
+        self.world_model_config = world_model_config
         self.max_seq_len = world_model_config['max_seq_len']
-        self.action_output_dim = world_model_config['action_output_dim']
-        self.num_agent_types = world_model_config.get('num_agent_types', DEFAULT_NUM_AGENT_TYPES)
+        self.obs_dim = world_model_config['obs_dim']
+        self.joint_obs_dim = world_model_config['joint_obs_dim']
+        self.action_dim = world_model_config['action_dim']
 
         # All possible ground-truth joint histories
-        self.all_possible_observations = sorted(get_all_possible_histories(self.env), key=len, reverse=True)
-        self.all_joint_histories = sorted(get_all_possible_states(self.env), key=len, reverse=True)
+        all_histories, all_jh = get_all_possible_histories(self.env)
+        self.all_private_histories = sorted(
+            all_histories, 
+            key=lambda x: len(x[0]), 
+            reverse=True
+        )
+        self.all_joint_histories = sorted(
+            all_jh, 
+            key=lambda x: len(x[0]), 
+            reverse=True
+        )
         
-        self.private_to_public_histories : dict[tuple, dict[tuple, float]] = {}
-        self.consistent_joint_histories_cache = {}
+        # Belief mapping: private history -> {joint history: probability}
+        self.private_to_joint_histories : dict[tuple, dict[tuple, float]] = {} # Private histories - {joint history - probablity}
         
-        # Unified internal states
-        self.v_values: dict[tuple, float] = {} 
-        self.policy: dict[tuple, int] = {}
-        self.legal_actions_cache = {}
+        # Planning tables
+        self.v_values: dict[tuple, float] = {}      # Joint histories - Values
+        self.policy: dict[tuple, int|None] = {}     # Private histories - action
+        self.legal_actions_cache = {}               # Private histories - actions
+        
+        self.joint_transition_cache : dict[tuple, list[tuple]] = {}
+        self.partner_prediction_cache : dict[tuple, np.ndarray] = {}
 
         self._init_legal_actions()
         self._init_tables()
-        self._map_histories_to_states()
+        #self._precompute_beliefs()
+        #self._precompute_joint_transitions()
         return
 
     def _init_legal_actions(self):
-        for obs in self.all_possible_observations:
+        for obs, done, turn_id, reward in self.all_private_histories:
+            if done:
+                self.legal_actions_cache[obs] = ()
+                continue
+
             if self.is_decpomdp:
                 self.legal_actions_cache[obs] = tuple(range(self.num_actions))
             elif self.is_myhanabi:
-                _, legal_actions_tuple = self.env.num_legal_actions(obs)
-                self.legal_actions_cache[obs] = legal_actions_tuple
+                _, actions = self.env.num_legal_actions(obs)
+                self.legal_actions_cache[obs] = actions
             else:
                 raise ValueError("No valid environment proided")
     
-    def _init_tables(self, model_path : str|None = None):
-        if model_path:
-            self.load()
-            return
-        
-        for obs in self.all_possible_observations:
-            legal_actions = self.legal_actions_cache.get(obs, ())
-            if legal_actions:
-                q_values = np.zeros(self.num_actions, dtype=np.float32)
-                for a_idx in legal_actions:
-                    q_values[a_idx] = 4.0 # Heuristic initial Q-value
-                self.v_values[obs] = q_values
-                self.policy[obs] = random.choice(legal_actions) # Random initial policy
-            else:
-                self.v_values[obs] = np.full(self.num_actions, -np.inf, dtype=np.float32) # No legal actions
+    def _init_tables(self):
+        # Init policy action
+        for obs, done, turn_id, reward in self.all_private_histories:
+            if obs not in self.v_values.keys():
+                self.v_values[obs] = reward
+            if done:
                 self.policy[obs] = None
-
-    def _mask_state(self, joint_history: tuple, player_id: int) -> tuple:
-        """
-        """
-        s_list = list(joint_history)
-        
+                self.v_values[obs] = reward
+            else:
+                acts = self.legal_actions_cache.get(obs, ())
+                if acts:
+                    self.policy[obs] = random.choice(acts)
+                else:
+                    self.policy[obs] = None 
+        return
+    
+    def _mask_state(self, joint_hist, player_id):
+        s_list = list(joint_hist)
         if self.is_decpomdp:
             if player_id == 0:
                 s_list[0] = -1
             else:
                 s_list[1] = -1
-
-        elif self.is_myhanabi:
-            if player_id == 0:
+        else:
+            if player_id == 0: 
                 s_list[0] = -1; s_list[1] = -1
-            else:
+            else: 
                 s_list[2] = -1; s_list[3] = -1
+
         return tuple(s_list)
     
-    def _get_current_player_id(self, obs : tuple)->int:
-        return len(obs) % 2
-    
+    def _get_joint_belief(self, private_hist):
+        return self.private_to_joint_histories.get(private_hist, {})
 
-    def _get_consistent_joint_histories(self, obs: tuple, focal_player_id: int) -> list[tuple]:
-        """
-        Returns all possible ground-truth joint histories consistent with the focal agent's observation `obs`.
-        Uses caching for speed.
-        """
-        cache_key = (obs, focal_player_id)
-        if cache_key in self.consistent_joint_histories_cache:
-            return self.consistent_joint_histories_cache[cache_key]
-        
-        consistent_histories = []
-        
-        num_actions_in_obs = len(obs) - self.num_card_slots_in_obs
 
-        possible_jhs_by_len = [jh for jh in self.all_joint_histories 
-                               if len(jh) == (self.num_card_slots_in_obs + num_actions_in_obs)]
-
-        for joint_hist in possible_jhs_by_len:
-            derived_obs = self._mask_state(joint_hist, focal_player_id)
-            if derived_obs == obs:
-                consistent_histories.append(joint_hist)
-        
-        self.consistent_joint_histories_cache[cache_key] = consistent_histories
-        return consistent_histories
-    
-
-    def _map_histories_to_states(self):
-        self.private_to_public_histories = defaultdict(dict) # Reset for fresh computation
-        self.world_model.eval() # Ensure World Model is in evaluation mode
-
-        start_length_obs = 2 if self.is_decpomdp else 4
-        for focal_obs in reversed(self.all_possible_observations):
-            focal_player_id = len(focal_obs) % 2
-            partner_player_id = 1 - focal_player_id
-
-            consistent_joint_histories = self._get_consistent_joint_histories(focal_obs, focal_player_id)
-
-            if not consistent_joint_histories:
-                continue
-            
-            likelihood_scores_for_obs = {}
-            for jh in consistent_joint_histories:
-                avg_nll_across_partner_types = 0.0
-                
-                # Average likelihood over all possible partner types
-                for partner_type_id in range(self.num_agent_types):
-                    temp_env = deepcopy(self.env)
-                    
-                    initial_deal = jh[:self.num_card_slots_in_obs]
-                    try:
-                        temp_env.reset(list(initial_deal))
-                    except (AssertionError, ValueError):
-                        # This joint history is invalid at its start. Assign infinite NLL.
-                        avg_nll_across_partner_types += float('inf') 
-                        continue
-
-                    actions_in_jh = jh[self.num_card_slots_in_obs:]
-                    nll_for_type_and_jh = 0.0
-                    num_partner_action_predictions = 0
-                    
-                    # This `current_focal_history_list` tracks the focal agent's observation sequence 
-                    # for the MentalNet input, built as we simulate this `jh`.
-                    current_focal_history_list = [] 
-                    
-                    # Store history of (focal_obs, focal_action) pairs to get context for WM.
-                    # This list holds the focal observations *before* focal acts.
-                    focal_obs_history_for_wm_input = []
-                    # This list holds the focal actions *taken*.
-                    focal_action_history_for_wm_input = []
-                    
-                    # Iterate through the sequence of actions that constitute this `jh`
-                    for k in range(len(actions_in_jh)):
-                        current_player_of_turn = self._get_current_player_id(tuple(temp_env.history))
-                        action_taken_in_this_turn = actions_in_jh[k]
-
-                        # Focal agent's actual observation *before* this action in `temp_env`
-                        focal_obs_before_this_action = self._mask_state(tuple(temp_env.history), focal_player_id)
-                        current_focal_history_list.append(_encode_observation(focal_obs_before_this_action, self.feat_dim, self.env))
-                        
-                        # If it's the partner's turn in this hypothetical JH, we use WM to predict their action
-                        # and compare it to the action actually taken in the JH (`action_taken_in_this_turn`).
-                        if current_player_of_turn == partner_player_id:
-                            # To predict partner's action, WM needs focal's observation *before focal acted* and *focal's last action*.
-                            # This means we look at the state `k-1` where focal last acted.
-                            if len(focal_obs_history_for_wm_input) > 0 and len(focal_action_history_for_wm_input) > 0:
-                                wm_focal_obs_prev = focal_obs_history_for_wm_input[-1]
-                                wm_focal_action_prev = focal_action_history_for_wm_input[-1]
-                                
-                                wm_past_eps, wm_curr_hist, wm_curr_obs_tensor, wm_own_act_tensor = self._prepare_wm_inputs(
-                                    focal_obs_at_step=wm_focal_obs_prev, # Focal's obs *before* focal's last action
-                                    focal_action_at_step=wm_focal_action_prev, # Focal's last action
-                                    partner_type_id=partner_type_id,
-                                    current_focal_history_list=current_focal_history_list[:-1] # Focal mental history up to wm_focal_obs_prev
-                                )
-                                
-                                with torch.no_grad():
-                                    action_logits, _, _ = self.world_model(wm_past_eps, wm_curr_hist, wm_curr_obs_tensor, wm_own_act_tensor)
-                                
-                                # Calculate NLL of the *actual partner action* (from jh) given WM's prediction
-                                nll = F.cross_entropy(action_logits, 
-                                                      torch.tensor([action_taken_in_this_turn], device=self.device)).item()
-                                nll_for_type_and_jh += nll
-                                num_partner_action_predictions += 1
-                        
-                        # After potential prediction, simulate the action taken in this turn to advance `temp_env.history`
-                        try:
-                            temp_env.step(action_taken_in_this_turn)
-                            if current_player_of_turn == focal_player_id:
-                                # Record focal's state and action for potential future WM input
-                                focal_obs_history_for_wm_input.append(focal_obs_before_this_action)
-                                focal_action_history_for_wm_input.append(action_taken_in_this_turn)
-                        except ValueError:
-                            # If `jh` contains an illegal action at any point, it's an impossible history.
-                            nll_for_type_and_jh = float('inf')
-                            break # Exit inner loop for this JH
-
-                    # If this joint history was valid and some partner actions were predicted
-                    if nll_for_type_and_jh != float('inf'):
-                        if num_partner_action_predictions > 0:
-                            avg_nll_across_partner_types += (nll_for_type_and_jh / num_partner_action_predictions)
-                        else:
-                            # No partner actions in this history to predict (e.g., very short history or focal agent always acts first)
-                            # Assign a neutral NLL (0.0 implies perfect prediction, which might be an overestimation)
-                            avg_nll_across_partner_types += 0.0
-                    else:
-                        avg_nll_across_partner_types += float('inf') # Invalid JH for this type
-
-                # Store the average NLL across partner types for this JH
-                if self.num_agent_types > 0:
-                    likelihood_scores_for_obs[jh] = - (avg_nll_across_partner_types / self.num_agent_types)
-                else:
-                    likelihood_scores_for_obs[jh] = 0.0 # Should not happen if DEFAULT_NUM_AGENT_TYPES > 0
-
-            # 3. Normalize scores to probabilities for this focal_obs
-            total_score_exp = 0.0
-            for jh_key, score in likelihood_scores_for_obs.items():
-                # Avoid overflow/underflow. Max score should be 0.0 (perfect prediction, NLL=0).
-                # Clip very low scores to prevent exp(-inf) == 0.0 from losing valid histories.
-                exp_score = np.exp(score) if score != float('-inf') else 0.0 # exp(-inf) is 0
-                likelihood_scores_for_obs[jh_key] = exp_score
-                total_score_exp += exp_score
-            
-            if total_score_exp > 0:
-                for jh_key, score_exp in likelihood_scores_for_obs.items():
-                    prob = score_exp / total_score_exp
-                    self.private_to_public_histories[focal_obs][jh_key] = round(prob, N_DECIMALS_FOR_BELIEF)
-            elif consistent_joint_histories: # All histories were invalid or had infinite NLL, assign uniform if any exist
-                uniform_prob = 1.0 / len(consistent_joint_histories)
-                for jh_key in consistent_joint_histories:
-                    self.private_to_public_histories[focal_obs][jh_key] = round(uniform_prob, N_DECIMALS_FOR_BELIEF)
-            # If no consistent_joint_histories, private_to_public_histories[focal_obs] remains an empty dict (not defaultdict).
-
-    
     def train(self):
-        """
-        Main planning loop for the DTDE ToMBI agent using Backward Induction.
-        It computes a policy and value function for the focal agent by considering
-        all possible baseline partner types and using the pre-computed belief over
-        joint histories.
-        """
-        max_delta = 0.0
-        
-        # Iterate through observations from longest to shortest for Backward Induction
-        # This ensures that V(next_obs) values are already computed when needed.
-        # So we need to reverse the order of `self.all_possible_observations` here.
-        for obs in tqdm(self.all_possible_observations, desc="ToMBI Planning"):
-            delta = self._optimize_node(obs)
-            if delta > max_delta:
-                max_delta = delta
+        max_delta = 0
+        pbar_ = tqdm(self.all_private_histories, leave=False, desc="ToM-BI Planning")
+        for private_hist, done, _, _ in pbar_:
+
+            if done:
+                continue
+
+            delta = self._optimize_private_node(private_hist)
+
+            max_delta = max(max_delta, delta)
+
         return max_delta
     
-    def _optimize_node(self, obs: tuple) -> float:
-        """
-        Calculates the optimal Q-values and policy for a given observation `obs`.
-        This is done by considering all possible actions of the focal agent,
-        simulating interaction with all partner types (using the world model),
-        and backing up values.
+    def _optimize_private_node(self, private_hist):
+        # Determine whose turn it is from the private_hist length
+ 
         
-        This method now uses the pre-computed belief distribution `self.private_to_public_histories[obs]`
-        to weight the contributions of different joint histories.
-        """
-        old_q_values = self.v_values.get(obs, np.full(self.num_actions, -np.inf, dtype=np.float32)).copy()
-        
-        focal_player_id = self._get_current_player_id(obs)
-        partner_player_id = 1 - focal_player_id
+        return abs(0.0) # Return delta for convergence check
 
-        legal_actions_for_focal_agent = self.legal_actions_cache.get(obs, ())
-        
-        # If no legal actions, return 0.0 delta and ensure values are -inf
-        if not legal_actions_for_focal_agent:
-            self.v_values[obs] = np.full(self.num_actions, -np.inf, dtype=np.float32)
-            self.policy[obs] = -1
-            return np.max(np.abs(self.v_values[obs] - old_q_values)) if old_q_values.size > 0 else 0.0
-
-        # Initialize Q-values for this observation (current focal agent's turn)
-        new_q_values_for_obs = np.full(self.num_actions, -np.inf, dtype=np.float32)
-
-        # Retrieve the belief distribution for this observation
-        belief_distribution = self.private_to_public_histories.get(obs, {})
-        if not belief_distribution:
-            # Fallback if no belief distribution (e.g., all consistent JHs were deemed impossible by WM).
-            # Treat all consistent joint histories as uniformly probable.
-            consistent_jhs = self._get_consistent_joint_histories(obs, focal_player_id)
-            if consistent_jhs:
-                uniform_prob = 1.0 / len(consistent_jhs)
-                belief_distribution = {jh: uniform_prob for jh in consistent_jhs}
-            else: # No consistent histories at all
-                self.v_values[obs] = np.full(self.num_actions, -np.inf, dtype=np.float32)
-                self.policy[obs] = -1
-                return np.max(np.abs(self.v_values[obs] - old_q_values)) if old_q_values.size > 0 else 0.0
-        
-        # Iterate through each possible action the focal agent can take
-        for focal_agent_action in legal_actions_for_focal_agent:
-            expected_return_for_action = 0.0
-            
-            # Iterate over the belief distribution (joint histories with their probabilities)
-            for ground_truth_joint_history, jh_prob in belief_distribution.items():
-                if jh_prob == 0: continue # Skip impossible histories
-
-                avg_return_for_jh_across_partner_types = 0.0
-                num_valid_partner_types_for_jh = 0
-
-                # For each consistent joint history, average its expected outcome over all known partner types
-                for partner_type_id in range(self.num_agent_types):
-                    temp_env = deepcopy(self.env)
-                    
-                    try:
-                        temp_env.reset(list(ground_truth_joint_history))
-                    except (AssertionError, ValueError):
-                        continue
-
-                    # Simulate focal agent's action
-                    # Rebuild `current_focal_history_list` for this `jh` and `focal_agent_action` for MentalNet
-                    current_focal_history_list = []
-                    
-                    # Store focal_obs *before* focal_agent_action for WM input (current_obs) and MentalNet
-                    focal_obs_before_focal_action = self._mask_state(tuple(temp_env.history), focal_player_id)
-                    current_focal_history_list.append(_encode_observation(focal_obs_before_focal_action, self.feat_dim, self.env))
-
-                    try:
-                        # Check if it's the focal player's turn in the temporary environment for this JH
-                        current_turn_in_temp_env = self._get_current_player_id(tuple(temp_env.history))
-                        
-                        if current_turn_in_temp_env != focal_player_id:
-                            # This specific joint_history state implies a different player's turn or inconsistency.
-                            # Penalize heavily and skip this partner type for this JH.
-                            avg_return_for_jh_across_partner_types += -100.0
-                            num_valid_partner_types_for_jh += 1
-                            continue
-
-                        temp_env.step(focal_agent_action)
-                    except ValueError:
-                        # Focal agent's action is illegal in this specific underlying world state given the cards
-                        avg_return_for_jh_across_partner_types += -100.0 # Penalize
-                        num_valid_partner_types_for_jh += 1
-                        continue
-
-                    # Predict partner's action using the World Model given focal's observation (pre-action) and focal's action
-                    wm_past_eps, wm_curr_hist, wm_curr_obs, wm_own_act = self._prepare_wm_inputs(
-                        focal_obs_before_focal_action, focal_agent_action, # Inputs to WM
-                        partner_type_id, current_focal_history_list # Partner type, Focal's history for MentalNet
-                    )
-                    
-                    self.world_model.eval() # Ensure eval mode for inference
-                    with torch.no_grad():
-                        action_logits, _, _ = self.world_model(
-                            wm_past_eps, wm_curr_hist, wm_curr_obs, wm_own_act
-                        )
-                    
-                    partner_action_pred = torch.argmax(action_logits, dim=-1).item()
-
-                    # Simulate partner's *predicted* action
-                    try:
-                        current_turn_in_temp_env = self._get_current_player_id(tuple(temp_env.history))
-                        
-                        if current_turn_in_temp_env != partner_player_id:
-                            # Inconsistency: partner should be acting now.
-                            avg_return_for_jh_across_partner_types += -100.0
-                            num_valid_partner_types_for_jh += 1
-                            continue
-
-                        temp_env.step(partner_action_pred)
-                    except ValueError:
-                        # Partner's predicted action is illegal in this specific underlying world state
-                        avg_return_for_jh_across_partner_types += -100.0 # Penalize
-                        num_valid_partner_types_for_jh += 1
-                        continue
-
-                    # Calculate value for this trajectory
-                    current_return = 0.0
-                    if temp_env.is_terminal():
-                        current_return = temp_env.payoff()
-                    else:
-                        # Non-terminal: Look up value of the next observation for the focal agent
-                        next_joint_history = tuple(temp_env.history)
-                        next_focal_obs = self._mask_state(next_joint_history, focal_player_id)
-                        
-                        # Use the max Q-value from the next state (already computed by BI)
-                        if next_focal_obs in self.v_values:
-                            # Filter out -inf for illegal actions before taking max
-                            valid_q_values = self.v_values[next_focal_obs][
-                                np.isin(np.arange(self.num_actions), self.legal_actions_cache.get(next_focal_obs, ()))
-                            ]
-                            if valid_q_values.size > 0:
-                                max_next_q = np.max(valid_q_values)
-                            else: # No legal actions in next_focal_obs
-                                max_next_q = 0.0
-                            current_return = self.gamma * max_next_q
-                        else:
-                            current_return = 0.0 # Default if next_focal_obs not yet computed (should not happen in BI)
-                    
-                    avg_return_for_jh_across_partner_types += current_return
-                    num_valid_partner_types_for_jh += 1
-
-                # Average return for this JH across valid partner types
-                if num_valid_partner_types_for_jh > 0:
-                    avg_return_for_jh = avg_return_for_jh_across_partner_types / num_valid_partner_types_for_jh
-                else:
-                    avg_return_for_jh = -100.0 # Severe penalty if no valid scenarios for any partner type
-
-                expected_return_for_action += avg_return_for_jh * jh_prob
-
-            new_q_values_for_obs[focal_agent_action] = expected_return_for_action
-
-        # Update V-values (Q-table) and policy for this observation
-        self.v_values[obs] = new_q_values_for_obs
-        
-        # Select best action for the policy
-        if np.all(np.isneginf(new_q_values_for_obs)): # If all actions are illegal or heavily penalized
-            self.policy[obs] = -1
-        else:
-            best_action_candidates = np.flatnonzero(new_q_values_for_obs == np.max(new_q_values_for_obs))
-            self.policy[obs] = np.random.choice(best_action_candidates) # Break ties randomly
-        
-        delta = np.max(np.abs(new_q_values_for_obs - old_q_values))
-        return delta
     
-    def act(self, input_state, *args, **kwargs):
-        action = self.policy[input_state]
+    def act(self, obs, exploit : bool, *args, **kwargs):
+        if not isinstance(obs, tuple):
+            obs = tuple(obs)
+        
+        action = self.policy.get(obs)
+        if action is None:
+            legal_actions = self.legal_actions_cache.get(obs, ())
+            if legal_actions:
+                return random.choice(legal_actions)
+            else:
+                raise ValueError(f"No policy or legal actions for observation: {obs}")
         return action
     
-    def save(self, filepath : str, *args, **kwargs):
-        data = {
-            "policy" : self.policy,
-            "v_values" : dict(self.v_values)
-        }
-        with open(filepath, 'wb') as f:
-            pickle.dump(data, f)
+    def save_transition(self, *args, **kwargs):
         return
     
-    def load(self, filepath : str, *args, **kwargs):
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(filepath)
-        if os.path.getsize(filepath) == 0:
-            raise ValueError("Q-table file is empty")
-        
-        with open(filepath, 'rb') as f:
+    def load(self, filepath: str, *args, **kwargs):
+        """Loads policy and V-values from file."""
+        with open(filepath, "rb") as f:
             data = pickle.load(f)
+            
         if not isinstance(data, dict):
-            raise ValueError("Loaded file does not contain a valid dictionary.")
-        
-        # Reconstruct defaultdict
-        self.policy.update(data['policy'])
-        self.v_values.update(data['v_values'])
-        return
-    
-    def reset(self):
-        return
-    
-    # EMPTY FUNCTIONS -- LEAVE THEM
-    def save_transition(self):pass   
+            raise ValueError("Invalid checkpoint format")
 
+        if "policy" not in data or "v_values" not in data:
+            raise ValueError("Checkpoint missing required fields: 'policy' and 'v_values'.")
+        
+        self.policy = data["policy"]
+        self.v_values = data["v_values"]
+        print(f"Loaded ToM-BI agent from {filepath}")
+        return
+    
+    def save(self, filepath: str, *args, **kwargs):
+        """Saves policy and V-values to file."""
+        data = {
+            "policy": self.policy,
+            "v_values": self.v_values
+        }
+
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+        with open(filepath, "wb") as f:
+            pickle.dump(data, f)
+        print(f"Saved ToM-BI agent to {filepath}")
+        return
 
 class ToMBI_AgentList(AgentList):
-    def __init__(
-            self,
-            tom_agent : DTDE_ToMBI_Agent,
-            baseline_agents : dict[BaseAgent]):
-        self.baseline_agents : dict[BaseAgent] = baseline_agents
-        self.focal_tom_agent : DTDE_ToMBI_Agent = tom_agent
-        self.current_partner : None|BaseAgent = None
-        self.partner_role : int|None = None
+    def __init__(self, tom_agent : DTDE_ToMBI_Agent, agents : dict[str, AgentList], *args, **kwargs):
+        self.baseline_agents = agents
+        self.tom_agent = tom_agent
+
+        super().__init__([tom_agent, tom_agent])
+
+        self.current_partner_name = None
+        self.tom_side = 0
+
+        first_partner = list(self.baseline_agents.keys())[0]
+        self.set_current_partner(first_partner, 0)
         return
 
-    def set_current_partner(self, agent_type : str, partner_role : int):
-        """Switch around active partner and role"""
-        assert agent_type in self.baseline_agents.keys()
-        assert partner_role in [0,1]
-        self.partner_role = partner_role
-        self.current_partner = self.baseline_agents[agent_type][partner_role]
+
+    def set_current_partner(self, agent_name : str, side : int):
+        if agent_name not in self.baseline_agents:
+            raise ValueError(f"Unknown baseline agent {agent_name}")
+        
+        partner_agents = self.baseline_agents[agent_name]
 
         self.clear()
-        # ToM Plays first
-        if self.partner_role == 1:
-            self.append(self.focal_tom_agent)
-            self.append(self.current_partner)
-        # Baseline Agents plays first
+
+        if side == 0:
+            self.append(self.tom_agent)
+            self.append(partner_agents[1])
         else:
-            self.append(self.current_partner)
-            self.append(self.focal_tom_agent)
+            self.append(partner_agents[0])
+            self.append(self.tom_agent)
+
+        self.tom_side = side
+        self.current_partner_name = agent_name
         return
+
+    def train(self):
+        """
+        Only train the ToM agent.
+        """
+        return self.tom_agent.train()
     
-    def train(self): return self.focal_tom_agent.train()      
-    def save(self, filepath: str): return self.focal_tom_agent.save(filepath)
-        
+    def reset(self):
+        """
+        Reset both agents before a new run.
+        """
+        self.tom_agent.reset()
+
+        for agents in self.baseline_agents.values():
+            for a in agents:
+                a.reset()
+
+    def save(self, path : str, *args, **kwargs):
+        self.tom_agent.save(path)
+        return

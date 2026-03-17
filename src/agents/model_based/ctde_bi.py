@@ -5,7 +5,7 @@ import pickle
 import os
 from collections import defaultdict
 
-from ..base_agent import ModelBasedAgent, AgentList
+from ..base_agent import ModelBasedAgent, AgentList, BaseAgent
 from tiny_game import DecPOMDP, MyHanabi, Game, get_all_possible_histories, get_all_possible_states
 
 class CTDE_BI_MB_Agent(ModelBasedAgent):
@@ -52,10 +52,9 @@ class CTDE_BI_MB_List(AgentList):
         self.joint_legal_actions_cache : dict[tuple, tuple] = {}
 
         # 1. Generate State Space
-        self.all_histories = get_all_possible_histories(self.env)
-        self.all_histories = sorted(self.all_histories, key = lambda x:len(x[0]), reverse=True)
-        self.all_joint_histories = get_all_possible_states(self.env)
-        self.all_joint_histories = sorted(self.all_joint_histories, key = lambda x:len(x[0]), reverse=True)
+        all_private_histories, all_possible_joint_histories = get_all_possible_histories(self.env)
+        self.all_private_histories = sorted(all_private_histories, key = lambda x:len(x[0]), reverse=True)
+        self.all_joint_histories = sorted(all_possible_joint_histories, key = lambda x:len(x[0]), reverse=True)
 
         self._init_tables()
 
@@ -81,7 +80,7 @@ class CTDE_BI_MB_List(AgentList):
             self.joint_policy[joint_history] = random.choice(legal)
         
         # Init private tables
-        for history, done, _, reward in self.all_histories:
+        for history, done, _, reward in self.all_private_histories:
             if done:
                 possible_actions = ()
             else:

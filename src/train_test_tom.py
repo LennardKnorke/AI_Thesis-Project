@@ -7,15 +7,16 @@ import torch
 from tqdm import tqdm
 
 # Project-specific imports
-from tiny_game import GAMES, Settings, GameNames, get_game_Rework, DecPOMDP, MyHanabi
+from tiny_game import GAMES, GameNames, get_game_Rework, DecPOMDP, MyHanabi, Game
 from runner import run_training # Make sure this is the MODIFIED runner.py for player_id
 from runner import run_episode # Also ensure this is the MODIFIED one
 from agents import *
 from config import *
-from train_worldmodel import setup_baseline_agents # Function to load pre-trained baseline agents
+from train_worldmodel import setup_baseline_agents, setup_hanabi_environments
+
 
 # --- Helper functions ---
-def load_world_model_and_config(game_name: str, device: str) -> tuple[ToM_WorldModel, dict[str, Any]]:
+def load_world_model_and_config(game_name: str, device: str, env : Game) -> tuple[ToM_WorldModel, dict[str, Any]]:
     """
     Loads a specific pre-trained ToM_WorldModel and its configuration for a given game.
     The world model's architecture parameters are derived from the environment structure
@@ -28,47 +29,37 @@ def load_world_model_and_config(game_name: str, device: str) -> tuple[ToM_WorldM
     
     with open(wm_best_params_path, 'r') as f:
         wm_training_params = json.load(f)
+    
+    ACT_DIM = env.num_actions + 1   # Num of possible actions + Null action
+    if isinstance(env, DecPOMDP):
+        start_len = 2
+        MAX_SEQ_LEN = env.horizon - 1
+        obs_act_dim = env.num_actions
+        obs_card_dim = env.num_cards * 2
 
-    dummy_env = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=False)
-    dummy_action_output_dim = dummy_env.num_actions
+    elif isinstance(env, MyHanabi):
+        start_len = 4
+        MAX_SEQ_LEN = env.horizon - 3
+        obs_act_dim = env.num_actions + env.num_cards + 1
+        obs_card_dim = env.num_cards * start_len
+    OBS_DIM = obs_act_dim + obs_card_dim
+    JOINT_OBS_DIM = OBS_DIM
 
-    if isinstance(dummy_env, DecPOMDP):
-        num_cards_in_focal_hand = 1
-        env_max_card_value = dummy_env.num_cards
-        dummy_max_seq_length = dummy_env.horizon - 1 
-    elif isinstance(dummy_env, MyHanabi):
-        num_cards_in_focal_hand = 2
-        env_max_card_value = dummy_env.max_card_value
-        dummy_max_seq_length = dummy_env.horizon - 3
-    else:
-        raise ValueError("Unsupported environment type encountered when deriving WM config.")
-
-    dummy_feat_dim = dummy_action_output_dim
-    if isinstance(dummy_env, DecPOMDP):
-        dummy_feat_dim += env_max_card_value
-    else:
-        dummy_feat_dim += (num_cards_in_focal_hand * env_max_card_value)
 
     wm_config = {
-        'feat_dim': dummy_feat_dim,
-        'action_output_dim': dummy_action_output_dim,
-        'max_seq_len': dummy_max_seq_length,
+        'obs_dim': OBS_DIM,
+        "joint_obs_dim" : JOINT_OBS_DIM,
+        'action_dim': ACT_DIM,
+        'max_seq_len': MAX_SEQ_LEN,
         'num_agent_types': len(BASELINE_EXPERIMENTS),
         'char_embed_dim': wm_training_params['char_dim'],
         'mental_embed_dim': wm_training_params['mental_dim'],
-        'trunk_dim': wm_training_params['trunk_dim']
+        'trunk_dim': wm_training_params['trunk_dim'],
+        'action_output_dim' : ACT_DIM
     }
 
     # CRITICAL FIX: Use the correct parameter names for ToM_WorldModel __init__
-    world_model = ToM_WorldModel(
-        obs_dim=wm_config['feat_dim'], # Corrected name
-        action_dim=wm_config['action_output_dim'], # Corrected name
-        num_agent_types=wm_config['num_agent_types'],
-        max_seq_len=wm_config['max_seq_len'],
-        char_embed_dim=wm_config['char_embed_dim'],
-        mental_embed_dim=wm_config['mental_embed_dim'],
-        trunk_dim=wm_config['trunk_dim']
-    )
+    world_model = ToM_WorldModel(**wm_config)
     
     wm_path = os.path.join(WORLD_MODELS_DIR, f"WM_{game_name}.pth")
     if not os.path.exists(wm_path):
@@ -81,7 +72,7 @@ def load_world_model_and_config(game_name: str, device: str) -> tuple[ToM_WorldM
 
     return world_model, wm_config
 
-def load_all_world_models(device: str) -> dict[str, tuple[ToM_WorldModel, dict[str, Any]]]:
+def load_all_world_models(device: str, environments) -> dict[str, tuple[ToM_WorldModel, dict[str, Any]]]:
     """
     Loads all pre-trained ToM_WorldModel instances and their configurations,
     keyed by game name. Robustly handles missing or erroneous models.
@@ -89,7 +80,7 @@ def load_all_world_models(device: str) -> dict[str, tuple[ToM_WorldModel, dict[s
     all_world_models: dict[str, tuple[ToM_WorldModel, dict[str, Any]]] = {}
     print("\nLoading all World Models...")
     for game_name in GAMES:
-        wm, wm_config = load_world_model_and_config(game_name, device)
+        wm, wm_config = load_world_model_and_config(game_name, device, environments[game_name])
         all_world_models[game_name] = (wm, wm_config)
     print("Finished loading World Models.")
     return all_world_models
@@ -101,7 +92,7 @@ TOM_EXPERIMENT = Experiment(
     name="DTDE ToMBI",
     agent_class=DTDE_ToMBI_Agent, # Refers to the individual agent class
     # max_iterations for model-based planning (BFS + BI) and attempts for random restarts (not applicable for BI usually)
-    param_list=[{"gamma": 0.99, "max_iterations": 1, "attempts": 1}], 
+    param_list=[{"max_iterations": 5}], 
     list_class=ToMBI_AgentList # This is the wrapper for the single ToMBI agent
 )
 
@@ -111,27 +102,27 @@ def train_test_tom():
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    tom_folder_name = TOM_EXPERIMENT.name.replace(" ", "_")
-    tom_results_dir = os.path.join(RESULTS_DIR, tom_folder_name)
+    # Path Preliminaries
+    tom_results_dir = TOM_EXPERIMENT.name.replace(" ", "_")
+    tom_results_dir = os.path.join(RESULTS_DIR, tom_results_dir)
     os.makedirs(tom_results_dir, exist_ok=True)
     
-    # This CSV will store the results of the ToMBI agent *against each baseline*
     final_csv_path = os.path.join(tom_results_dir, "final_results.csv")
 
-    world_models_by_game = load_all_world_models(device)
-    baseline_agents_by_game = setup_baseline_agents() # This is dict[game_name, dict[baseline_name, AgentList]]
+    environments = setup_hanabi_environments()
 
-    if not world_models_by_game:
-        print("No world models loaded. Exiting ToMBI training.")
-        return
-    if not baseline_agents_by_game:
-        print("No baseline agents loaded. Cannot evaluate ToMBI. Exiting.")
+    world_models_by_game = load_all_world_models(device, environments)
+
+    baseline_agents_by_game = setup_baseline_agents(environments)
+
+    ensembles : dict[str, np.ndarray] = load_ensembles()
+
+    if not world_models_by_game or not baseline_agents_by_game or not ensembles:
+        print("Missing Components. Exiting ToMBI training.")
         return
 
-    print(f"\nStarting training and evaluation for {TOM_EXPERIMENT.name} agents...")
-    
+    # Train and evaluate    
     all_evaluation_results = {}
-
     pbar_games = tqdm(GAMES, desc=f"Processing Games for {TOM_EXPERIMENT.name}")
     for game_name in pbar_games:
         if game_name not in world_models_by_game:
@@ -140,21 +131,25 @@ def train_test_tom():
         if game_name not in baseline_agents_by_game:
             pbar_games.write(f"[SKIPPING] Game {game_name}: No Baseline Agents loaded.")
             continue
-        
+        if game_name not in ensembles:
+            pbar_games.write(f"[SKIPPING] Game {game_name}: No Ensemble")
+            continue
+
         # Select Environment
-        env = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=False)
+        env = environments[game_name]
         world_model, wm_config = world_models_by_game[game_name]
         baseline_agents = baseline_agents_by_game[game_name]
 
         # Set up ToM Agent
-        tom_params = TOM_EXPERIMENT.param_list[0].copy()
         tom_agent = DTDE_ToMBI_Agent(
             env=env,
-            num_cards = 5,
-            num_actions=4,
+            num_cards = env.num_cards,
+            ensemble=ensembles[game_name],
+            num_actions=env.num_actions,
             world_model=world_model,
             world_model_config=wm_config,
-            device=device
+            device=device,
+            gamma=0.99
         )
         agent_list : ToMBI_AgentList = ToMBI_AgentList(tom_agent, baseline_agents)
 
@@ -163,32 +158,53 @@ def train_test_tom():
         train_results = []
         start_states = env.start_states()
 
+        n_rewards = len(start_states) * len(agent_list.baseline_agents.keys()) * 2
         # Planning and Testing Step
-        for it in range(tom_params['max_iterations']):
+        for it in range(5):
             # Planning
-            train_loss = tom_agent.train()
-            train_results.append(train_loss)
+            max_delta = tom_agent.train()
+            train_results.append(max_delta)
 
             # Testing
-            it_reward = 0.0
-            n_rewards = len(start_states) * len(agent_list.baseline_agents.keys()) * 2
+            total_reward = 0.0
+            
             for s0 in start_states:
                 for b_agent in agent_list.baseline_agents.keys():
                     for side in [0,1]:
                         agent_list.set_current_partner(b_agent, side)
                         episode = run_episode(env, agent_list, s0, True)
 
-                        it_reward += episode[-1]
+                        total_reward += episode[-1]
                     #
-            it_reward = it_reward // n_rewards
-            test_results.append(it_reward)
+            avg_reward = total_reward // n_rewards
+            test_results.append(avg_reward)
+            pbar_games.write(f"Iter {it}: Loss={max_delta:.4f}, Avg Reward={avg_reward:.4f}")
         # Save Game specific policies
         agent_statedict_path = os.path.join(tom_results_dir, f"G_{game_name}_agent.pkl")
         agent_list.save(agent_statedict_path)
 
         all_evaluation_results[f"reward_{game_name}"] = test_results
-        all_evaluation_results[f"loss_{game_name}"] = train_loss
+        all_evaluation_results[f"loss_{game_name}"] = train_results
 
     # Save Results
     results_df = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in all_evaluation_results.items()]))
     results_df.to_csv(final_csv_path, index=False)
+    return
+
+
+
+
+def load_ensembles():
+    try:
+        ensembles = {}
+        for gname in GAMES:
+            filepath = os.path.join(WORLD_MODELS_DIR, f"G_{gname}_ensemble.npy")
+            e = np.load(filepath)
+            ensembles[gname] = e
+        return ensembles
+    except:
+        return None
+    
+
+if __name__ == "__main__":
+    train_test_tom()

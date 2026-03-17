@@ -22,18 +22,18 @@ from train_test_baselines import load_best_baselinesagents
 
 # --- CONSTANTS ---
 TRAIN_SIZE_RATIO = 0.8
+TOM_PARAM_LOG_FILE = "tested_params.json"
+TOM_PARAM_LOG_FILE = os.path.join(WORLD_MODELS_DIR, TOM_PARAM_LOG_FILE)
 
 # --- HYPERPARAMETER GRID ---
 TOM_PARAM_GRID = {
-    "char_dim": [4, 8, 16],
+    "char_dim": [8, 16],
     "mental_dim": [16, 32],
     "trunk_dim": [16, 32, 64,],
     "lr": [0.001, 0.01],
-    "epochs": [1000],
-    "batch_size" : [32, 64]
+    "epochs": [500],
+    "batch_size" : [64]
 }
-
-# --- UTILITY FUNCTIONS ---
 def generate_param_combinations(grid: dict) -> list[dict]:
     """Generates all permutations of hyperparameters."""
     keys, values = zip(*grid.items())
@@ -74,27 +74,35 @@ class ToMDataset(torch.utils.data.Dataset):
         return len(self.x_obs)
 
     def __getitem__(self, idx):
+        past = torch.tensor(self.x_past_traj[idx], dtype=torch.float32)
+        history = torch.tensor(self.x_history[idx], dtype=torch.float32)
+        obs = torch.tensor(self.x_obs[idx], dtype=torch.float32)
+        act = torch.tensor(self.x_act[idx], dtype=torch.float32)
+        tgt_obs = torch.tensor(self.y_obs[idx], dtype=torch.float32)
+        tgt_act = torch.tensor(self.y_act[idx], dtype=torch.long)
+        tgt_type = torch.tensor(self.y_type[idx], dtype=torch.long)
         return {
             # Inputs
-            "past": torch.tensor(self.x_past_traj[idx], dtype=torch.float32),
-            "history": torch.tensor(self.x_history[idx], dtype=torch.float32),
-            "obs": torch.tensor(self.x_obs[idx], dtype=torch.float32),
-            "act": torch.tensor(self.x_act[idx], dtype=torch.float32), # Own action is float input
-            
+            "past": past,
+            "history": history,
+            "obs": obs,
+            "act": act,
             # Targets
-            "tgt_obs": torch.tensor(self.y_obs[idx], dtype=torch.float32), # Regression target
-            "tgt_act": torch.tensor(self.y_act[idx], dtype=torch.float32),    # Classification target (Long)
-            "tgt_type": torch.tensor(self.y_type[idx], dtype=torch.long)   # Classification target (Long)
+            "tgt_obs": tgt_obs,
+            "tgt_act": tgt_act,
+            "tgt_type": tgt_type
         }
-        
+    
 
 Dataframe = dict[str, Dataset|DataLoader|int]
 dataframe_template : Dataframe = {
     "train" : ToMDataset,
     "val" : ToMDataset,
+    # Dimensions
     "obs_dim" : int,
     "action_dim" : int,
-    "max_seq_length" : int
+    "max_seq_length" : int,
+    "joint_obs_dim" : int,
 }
 
 
@@ -102,66 +110,114 @@ dataframe_template : Dataframe = {
 def train_worldmodel()->None:
     os.makedirs(WORLD_MODELS_DIR, exist_ok=True)
 
-    # 1. Set up ToM param configurations and Baseline Agents
-    param_configs = generate_param_combinations(TOM_PARAM_GRID)
-    baseline_agents_per_game = setup_baseline_agents()
+    environments = setup_hanabi_environments()
 
-    # 2. Collect Data per Game
-    full_dataset: dict[str, Dataframe] = setup_dataset(baseline_agents_per_game)
+    param_configs = generate_param_combinations(TOM_PARAM_GRID)
+
+    baseline_agents_per_game = setup_baseline_agents(environments)
+
+    full_dataset: dict[str, Dataframe] = setup_dataset(baseline_agents_per_game, environments)
     if full_dataset is None:
         print("No data collected. Check trained baselines.")
         return
 
-    best_params = None
-    best_loss_per_game = {}   # {game: loss}
-    best_models_per_game = {} # {game: state_dict}
+    # Load previous best results
+    best_params, best_results = load_tmp_best_results()
+    processed_params = load_processed_params(best_params) if best_params is not None else []
 
-    # 3. Grid Search Loop
+    # Grid Search Loop
     pbar = tqdm(param_configs, desc="ToM WM Parameter Search")
     for params in pbar:
+        # Check for processed params
+        if are_params_processed(processed_params, params):
+            continue
 
+        # Results Cachce
         current_loss_per_game = {}
+        current_obs_action_acc_per_game = {}
+        current_obs_card_acc_per_game = {}
+        current_act_acc_per_game = {}
         current_models_per_game = {}
 
         # Train for every game with these params
         pbar2 = tqdm(full_dataset.items(), desc="Iterate over Games", leave=False)
         for game_name, dataset in pbar2:
-            val_loss, state_dict = train_evaluate_world_model(params, dataset, NUM_AGENT_TYPES)
-            current_loss_per_game[game_name] = val_loss
+            #pbar2.set_postfix()
+
+            env = environments[game_name]
+
+            val_loss_list, obs_act_acc_list, obs_card_acc_list, act_acc_list, state_dict = train_evaluate_world_model(params, dataset, NUM_AGENT_TYPES, env)
+            
+            current_loss_per_game[game_name] = val_loss_list
+            current_obs_action_acc_per_game[game_name] = obs_act_acc_list[-1]  # Last epoch's action part accuracy
+            current_obs_card_acc_per_game[game_name] = obs_card_acc_list[-1]    # Last epoch's card part accuracy
+            current_act_acc_per_game[game_name] = act_acc_list[-1]              # Last epoch's action prediction accuracy
             current_models_per_game[game_name] = state_dict
 
-        # Compare vs Global Best
-        if best_params is None or is_better_results(best_loss_per_game, current_loss_per_game):
+        # Compute averages across games
+        avg_last_loss = np.mean([l[-1] for l in current_loss_per_game.values()])
+        avg_last_obs_action_acc = np.mean(list(current_obs_action_acc_per_game.values()))
+        avg_last_obs_card_acc = np.mean(list(current_obs_card_acc_per_game.values()))
+        avg_last_act_acc = np.mean(list(current_act_acc_per_game.values()))
+
+        # Write summary for this parameter set
+        is_better = (best_params is None) or is_better_results(best_results, current_loss_per_game)
+        _text =  f"New Best {params}!! | " if is_better else  f"Completed config {params} | "
+        tqdm.write(
+            f"{_text}"
+            f"Avg Val Loss: {avg_last_loss:.4f} | "
+            f"Obs Action Acc: {avg_last_obs_action_acc:.4f} | "
+            f"Obs Card Acc: {avg_last_obs_card_acc:.4f} | "
+            f"Action Pred Acc: {avg_last_act_acc:.4f}"
+        )
+
+        # Identify model improvement
+        if is_better:
             best_params = params
-            best_loss_per_game = current_loss_per_game
-            best_models_per_game = current_models_per_game
-            avg_last_loss = np.mean([l[-1] for _, l in best_loss_per_game.items()])
-            tqdm.write(f"New Best! Avg Loss: {avg_last_loss} - {best_params}")
 
             # Save Params
             with open(os.path.join(WORLD_MODELS_DIR, "best_params.json"), 'w') as f:
                 json.dump(best_params, f, indent=4)
 
             # Save Results CSV
-            df = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in best_loss_per_game.items()]))
+            results_data = {}
+            for game_name in current_loss_per_game.keys():
+                results_data[f"loss_{game_name}"] = current_loss_per_game[game_name]
+                results_data[f"obs_card_acc_{game_name}"] = current_obs_card_acc_per_game[game_name]
+                results_data[f"obs_act_acc_{game_name}"] = current_obs_action_acc_per_game[game_name]
+                results_data[f"act_acc_{game_name}"] = current_act_acc_per_game[game_name]
+            best_results = results_data
+            
+            df = pd.DataFrame(best_results)
             df.to_csv(os.path.join(WORLD_MODELS_DIR, "final_results.csv"), index=False)
 
             # Save Models
-            for game_name, state_dict in best_models_per_game.items():
+            for game_name, state_dict in current_models_per_game.items():
                 save_path = os.path.join(WORLD_MODELS_DIR, f"WM_{game_name}.pth")
                 torch.save(state_dict, save_path)
+
+        # Process Params tested
+        processed_params.append(params)
+        log_processed_params(params)
     return
 
 
-def setup_baseline_agents():
+def setup_hanabi_environments()->dict[str, Game]:
+    environments = {}
+    for game_name in GAMES:
+        tmp_env = get_game_Rework(GameNames(game_name), normalize=True)
+        environments[game_name] = tmp_env
+    return environments
+
+
+def setup_baseline_agents(environments : dict[str, Game]):
     base_experiments = load_best_baselinesagents()
     agents_per_game : dict[str, dict[str,AgentList]]= {}
 
     # Loop over game environments
     print("Loading Baseline Agents")
     for game_name in GAMES:
-
-        tmp_env = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=False)
+        tmp_env = environments[game_name]        
 
         game_agents : dict[str, AgentList]= {}      # To be filled
 
@@ -185,49 +241,43 @@ def setup_baseline_agents():
     return agents_per_game
 
 
-def setup_dataset(baseline_agents_per_game : dict[str, dict[str, AgentList]], *args, **kwargs)->dict[str, Dataframe]:
+def setup_dataset(baseline_agents_per_game : dict[str, dict[str, AgentList]], environments : dict[str, Game], *args, **kwargs)->dict[str, Dataframe]:
     full_dataset = {}
     ensembles_per_game = {}
 
     # Loop over potential game environments
-    pbar = tqdm(baseline_agents_per_game.items(), desc="Set up Games Datasets")
-    for game_name, agents in pbar:
+    pbar = tqdm(baseline_agents_per_game.keys(), desc="Set up Games Datasets")
+    for game_name in pbar:
+        env = environments[game_name]
+        agents = baseline_agents_per_game[game_name]
 
-        # and collect a dataset/planning ensemble for each.
-        env = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=False)
         game_dataset, ensemble = collect_game_datasets(env, agents, game_name, *args, **kwargs)
-        tqdm.write(f"{game_name} - Data Created")
-        ensembles_per_game[game_name] = ensemble
 
+        ensembles_per_game[game_name] = ensemble
         full_dataset[game_name] = game_dataset
 
     return full_dataset#, ensembles_per_game
 
 
 def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], game_name : str, *args, **kwargs) -> Dataframe:
-    """
-    Main Data Collection Loop.
-    Returns: 
-        1. Datasets dict
-    """
-
     # Action Dimension
     ACT_DIM = env.num_actions + 1   # Num of possible actions + Null action
     null_action = env.num_actions
-
     # ENV SPECIFIC SPECS
-    max_card_value = env.num_cards  # Num of possible cards
-    num_players = 2
     if isinstance(env, DecPOMDP):
         start_len = 2
-        MAX_SEQ_LEN = env.horizon - 1  #(Converge 2 cards into 1 obs)
-        cards_per_player  = 1
-    else:
+        MAX_SEQ_LEN = env.horizon - 1   #(Converge 2 cards into 1 obs)
+        obs_act_dim = env.num_actions       # Action observed only
+        obs_card_dim = env.num_cards * 2
+    elif isinstance(env, MyHanabi):
         start_len = 4
         MAX_SEQ_LEN = env.horizon - 3     #(converge 4 cards into 1 obs)
-        cards_per_player = 2
-    OBS_DIM = env.num_actions + (max_card_value * cards_per_player) # Private observation dimension
-    JOINT_OBS_DIM = env.num_actions + ((max_card_value * cards_per_player) * num_players)
+        obs_act_dim = env.num_actions + env.num_cards + 1   # Action observed includes a potential card revealed
+        obs_card_dim = env.num_cards * start_len
+    else:
+        raise ValueError("Upsi?")
+    OBS_DIM = obs_act_dim + obs_card_dim
+    JOINT_OBS_DIM = OBS_DIM
 
     # PAST CONTEXT
     start_states = env.start_states()
@@ -241,8 +291,7 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
     )
 
     # Dataset
-    DATASET_EPISODES = 15 # Per agent type and per start state (PAST_EPISODES_CONTEXT)
-    # DATASET_EPISODES *= PAST_EPISODES_CONTEXT
+    DATASET_EPISODES = 15
     train_storage = []
     val_storage = []
 
@@ -250,76 +299,93 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
     p0_card_cutoff_idx = start_len // 2
     
     # Loop over each agent partner duo
-    for type_idx, (type_name, agents_list) in enumerate(baseline_agents.items()):
+    pbar2 = tqdm(enumerate(baseline_agents.keys()), leave=False)
+    for type_idx, type_name in pbar2:
+        agents_list = baseline_agents[type_name]
+
         # Datapoints storage per agent type
         memory_bank_train = []
         memory_bank_val = []
 
-        # Encode the current agents
+        # Encode the current agents ####################################################################################
         type_id_enc = np.zeros(NUM_AGENT_TYPES, dtype=np.float32)
         type_id_enc[type_idx] = 1.0
-        
-        episodes_collected = 0
-        while episodes_collected < DATASET_EPISODES:
-            for s0 in start_states:
-                if episodes_collected >= DATASET_EPISODES: break
 
+        pbar3 = tqdm(range(DATASET_EPISODES), leave=False)
+        for ep in pbar3:
+            for s0 in start_states:
                 # Play an episode
                 full_episode_log = run_episode(env, agents_list, list(s0), True) # Returns history + payoff in list
                 full_history = full_episode_log[:-1] # Fully observable history (no masking)
                 
-                # Convert (C0, C1, A0, A1) -> ((C0,C1), A0, A1) or (P0C1, P0C2, P1C0, P1C1, P0A0, P1A1...) -> ((P0C1, P0C2, P1C0, P1C1), P0A0, P1A0,...)
+                # Split into cards and actions
                 cards = full_history[:start_len]
                 actions = full_history[start_len:]
 
                 # Private Hisotires
-                p0_cards = cards[p0_card_cutoff_idx:] # THEY OBSERVE THE CARDS OF THEIR PARTNER NOT THEIR OWN!
-                p1_cards = cards[:p0_card_cutoff_idx]
+                p0_cards = cards.copy()
+                p1_cards = cards.copy()
+
+                for i in range(len(cards)):
+                    if i < p0_card_cutoff_idx:
+                        p0_cards[i] = -1
+                    else:
+                        p1_cards[i] = -1
+
                 p0_history_seq = [p0_cards] + actions
                 p1_history_seq = [p1_cards] + actions
-
                 full_history = [cards] + actions
 
-                h_enc = np.zeros((MAX_SEQ_LEN, JOINT_OBS_DIM), dtype=np.float32) # Encoded step-t joint history
-
                 assert len(full_history) == len(p0_history_seq) and len(full_history) == len(p1_history_seq)
+
+                h_enc = np.zeros((MAX_SEQ_LEN, JOINT_OBS_DIM), dtype=np.float32)
                 is_p0_turn : bool = True
 
                 # Loop Over Timesteps to create inputs and outputs for each step
                 for i, (joint_obs, p0_obs, p1_obs) in enumerate(zip(full_history, p0_history_seq, p1_history_seq)):
-                    # 1. Encode the current private observations
-                    p0_z_enc = _encode_observation(p0_history_seq[i], OBS_DIM, env, s0, is_p0_turn)
-                    p1_z_enc = _encode_observation(p1_history_seq[i], OBS_DIM, env, s0, is_p0_turn)
+                    # Encode the current private observations
+                    p0_z_enc = _encode_observation(p0_obs, OBS_DIM, env, s0, is_p0_turn)
+                    p1_z_enc = _encode_observation(p1_obs, OBS_DIM, env, s0, is_p0_turn)
 
                     # Encode step t joint observation/history 
-                    z_enc = _encode_joint_observation(full_history[i], JOINT_OBS_DIM, env, s0, is_p0_turn)
+                    z_enc = _encode_joint_observation(joint_obs, JOINT_OBS_DIM, env, s0, is_p0_turn)
                     h_enc[i] = z_enc
 
-                    # 2. Encode the action taken for both parties
+                    # Encode the action taken for both parties
                     current_act_idx = i + 1
                     if current_act_idx < len(full_history):
-                        current_act_int = full_history[current_act_idx]
+                        current_act = full_history[current_act_idx]
+
+                        if isinstance(current_act, (tuple, list)):
+                            current_act_int = current_act[0]  
+                        else:
+                            current_act_int = current_act
+
                         if is_p0_turn:
                             p0_act_enc = _encode_action(current_act_int, ACT_DIM)
                             p1_act_enc = _encode_action(null_action, ACT_DIM)
+                            p0_act_int = current_act_int
+                            p1_act_int = null_action
                         else:
                             p0_act_enc = _encode_action(null_action, ACT_DIM)
                             p1_act_enc = _encode_action(current_act_int, ACT_DIM)
+                            p0_act_int = null_action
+                            p1_act_int = current_act_int
                     else:
                         break # Safety break
                     
                     # 3. Encode the next_obs
                     next_obs_idx = current_act_idx # Action is seen.
-                    tgt_obs_int = full_history[next_obs_idx]
-                    next_obs_enc = _encode_observation(tgt_obs_int, OBS_DIM, env, s0, is_p0_turn)
+                    tgt_obs_ = full_history[next_obs_idx]
+                    next_obs_enc = _encode_observation(tgt_obs_, OBS_DIM, env, s0, is_p0_turn)
 
 
                     p0_datapoint = {
                         "obs" : p0_z_enc,
                         "act" : p0_act_enc,
-                        "tgt_act": p1_act_enc,       # Integer
+                        "tgt_act": p1_act_int,
                         "tgt_obs": next_obs_enc,
-                        "tgt_type": type_idx,          # Integer
+                        "tgt_type": type_idx,
                         # CRITICAL: Copy the current state of past episodes buffer
                         "past_episodes": past_episodes_ensemble.copy(),
                         "current_history": h_enc.copy()
@@ -327,16 +393,16 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
                     p1_datapoint = {
                         "obs": p1_z_enc,
                         "act": p1_act_enc,
-                        "tgt_act": p0_act_enc,       # Integer
+                        "tgt_act": p0_act_int,
                         "tgt_obs": next_obs_enc,
-                        "tgt_type": type_idx,          # Integer
+                        "tgt_type": type_idx,
                         # CRITICAL: Copy the current state of past episodes buffer
                         "past_episodes": past_episodes_ensemble.copy(),
                         "current_history": h_enc.copy()
                     }
                   
                     # 5. Append relevant perspective to dataset
-                    if episodes_collected < (DATASET_EPISODES * TRAIN_SIZE_RATIO):
+                    if ep < (DATASET_EPISODES * TRAIN_SIZE_RATIO):
                         memory_bank_train.append(p0_datapoint)
                         memory_bank_train.append(p1_datapoint)
                     else:
@@ -344,7 +410,6 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
                         memory_bank_val.append(p1_datapoint)
                     # Change flag
                     is_p0_turn = not is_p0_turn
-                episodes_collected += 1
 
         # Update total database with experiences of the current agent
         train_storage.extend(memory_bank_train)
@@ -389,7 +454,7 @@ def _setup_ensemble(env : Game, baseline_agent : dict[AgentList], past_episodes_
                 p_idx += 1
 
     np.save(ensemble_path, vec)
-    tqdm.write(f"Saved Game Ensemble: {game_name}")
+    tqdm.write(f"Created Game Ensemble: {game_name}")
     return vec
 
 
@@ -413,15 +478,40 @@ def convert_game_dataset(train_data, val_data, obs_dim, joint_obs_dim, act_dim, 
     df["obs_dim"] = obs_dim
     df["act_dim"] = act_dim
     df["max_seq_length"] = seq_len
-    
     return df
 
 
+def load_tmp_best_results():
+    #
+    params_path = os.path.join(WORLD_MODELS_DIR, "best_params.json")
+    results_path = os.path.join(WORLD_MODELS_DIR, "final_results.csv")
+    if not os.path.exists(params_path) or not os.path.exists(results_path):
+        return None, {}
+    
+    # Load params
+    with open(params_path, 'r') as f:
+        best_params = json.load(f)
+
+    # Load results
+    df = pd.read_csv(results_path)
+    best_results_per_game = {
+        col: df[col].dropna().tolist()
+        for col in df.columns
+    }
+
+    return best_params, best_results_per_game
+
+
 # --- TRAINING FUNCTION --- 
-def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents : int) -> tuple[float, dict]:
+def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents : int, env : Game) -> tuple[list[float], list[float], list[float], dict]:
     """
     Trains one model on one game for X epochs. Returns Validation Loss and State Dict.
     """
+    action_part_dim = env.num_actions + 1  
+
+    if isinstance(env, MyHanabi):
+        card_part_dim = env.num_cards * 4
+
     # 1. Setup Model
     model = ToM_WorldModel(
         joint_obs_dim=dataset_info["joint_obs_dim"],
@@ -439,22 +529,27 @@ def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents
     
     optimizer = optim.Adam(model.parameters(), lr=params['lr'])
     ce_loss = nn.CrossEntropyLoss()
-    mse_loss = nn.MSELoss()
+    bce_loss = nn.BCEWithLogitsLoss()
 
-    epoch_val_losses = []
+
+    epoch_train_losses = []
+    epoch_obs_action_acc = []
+    epoch_obs_card_acc = []
+    epoch_action_acc = []
     
     # 2. Training Loop
     pbar = tqdm(range(params['epochs']), leave= False)
-    for _ in pbar:
+    for epoch in pbar:
+        # Training Step
         model.train()
+        train_loss_sum = 0.0
+        train_batches = 0
 
         for batch in train_loader:
-            # Unpack Dictionary from DataLoader
             past = batch['past']
             hist = batch['history']
             obs = batch['obs']
             act = batch['act']
-
             tgt_act = batch['tgt_act']
             tgt_obs = batch['tgt_obs']
             tgt_type = batch['tgt_type']
@@ -462,20 +557,29 @@ def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents
             optimizer.zero_grad()
             
             act_logits, obs_pred, id_logits = model(past, hist, obs, act)
-            
-            l_act = ce_loss(act_logits, tgt_act)
-            l_obs = mse_loss(obs_pred, tgt_obs)
-            l_id = ce_loss(id_logits, tgt_type)
-            
-            loss = l_act + l_obs + (0.2 * l_id)
 
+            # Loss
+            loss_obs = bce_loss(obs_pred, tgt_obs)      # Obs Prediction (complex)
+            loss_act = ce_loss(act_logits, tgt_act)     # Action Prediction (onehot)
+            loss_id  = ce_loss(id_logits, tgt_type)
+            loss = loss_act + loss_obs + (0.2 * loss_id)
             loss.backward()
+
             optimizer.step()
-            
-        # 3. Final Validation
+
+            train_loss_sum += loss.item()
+            train_batches += 1
+
+        avg_train_loss = train_loss_sum / train_batches
+        epoch_train_losses.append(avg_train_loss) 
+
+        # Final Validation
         model.eval()
-        val_loss_sum = 0.0
-        num_batches = 0
+        correct_obs_action = 0
+        correct_obs_cards = 0
+        correct_act = 0
+        total = 0
+
         with torch.no_grad():
             for batch in val_loader:
                 past = batch['past']
@@ -488,29 +592,123 @@ def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents
 
                 act_logits, obs_pred, _ = model(past, hist, obs, act)
 
-                # Metric: Action Loss + Obs Loss
-                l_act = ce_loss(act_logits, tgt_act)
-                l_obs = mse_loss(obs_pred, tgt_obs)
-                
-                val_loss_sum += (l_act + l_obs).item()
-                num_batches += 1
+                if isinstance(env, DecPOMDP):
+                    pred_obs = obs_pred.argmax(dim=1)
+                    true_obs = tgt_obs.argmax(dim=1)
+                    correct_obs = (pred_obs == true_obs).sum().item()
+                    # For consistency with return values, set both action and card acc to same
+                    correct_obs_action += correct_obs
+                    correct_obs_cards += correct_obs   
 
-        avg_val_loss  = val_loss_sum / max(1, num_batches)
-        epoch_val_losses.append(avg_val_loss)
+                elif isinstance(env, MyHanabi):
+                    # Split into action part and card part
+                    obs_pred_action = obs_pred[:, :action_part_dim]
+                    obs_pred_cards = obs_pred[:, action_part_dim:]
+
+                    # Convert target one-hot to class indices
+                    tgt_obs_action = tgt_obs[:, :action_part_dim].argmax(dim=1)
+                    tgt_obs_cards = tgt_obs[:, action_part_dim:].argmax(dim=1)
+
+                    # Calculate accuracies
+                    pred_obs_action = obs_pred_action.argmax(dim=1)
+                    pred_obs_cards = obs_pred_cards.argmax(dim=1)
+
+                    correct_obs_action += (pred_obs_action == tgt_obs_action).sum().item()
+                    correct_obs_cards += (pred_obs_cards == tgt_obs_cards).sum().item()
+
+                pred_act = act_logits.argmax(dim=1)
+                correct_act += (pred_act == tgt_act).sum().item()
+                total += tgt_act.size(0)
+
+        # Calculate validation metrics
+        avg_obs_action_acc = correct_obs_action / total if total > 0 else 0.0
+        avg_obs_cards_acc = correct_obs_cards / total if total > 0 else 0.0
+        avg_act_acc = correct_act / total if total > 0 else 0.0
+
+        #epoch_val_losses.append(avg_val_loss)
+        epoch_obs_action_acc.append(avg_obs_action_acc)
+        epoch_obs_card_acc.append(avg_obs_cards_acc)
+        epoch_action_acc.append(avg_act_acc)
+
+        postfix_dict = {
+            'loss': f'{avg_train_loss:.4f}',
+            'act_acc': f'{avg_act_acc:.4f}'
+        }
+        if isinstance(env, MyHanabi):
+            postfix_dict['obsA_acc'] = f'{avg_obs_action_acc:.4f}'
+            postfix_dict['obsC_acc'] = f'{avg_obs_cards_acc:.4f}'
+        else:  # DecPOMDP
+            postfix_dict['obs_acc'] = f'{avg_obs_action_acc:.4f}'
             
-    return epoch_val_losses, model.state_dict()
+        pbar.set_postfix(postfix_dict)
+    # Finalize Training
+    return epoch_train_losses, epoch_obs_action_acc, epoch_obs_card_acc, epoch_action_acc, model.state_dict()
 
 
-def is_better_results(old_loss_dict: None|dict[str, list[float]], new_loss_dict: dict[str, list[float]]) -> bool:
+def is_better_results(best_results: None|dict[str, list[float]], new_loss_dict: dict[str, list[float]]) -> bool:
     """
     Determines if the new parameter set is better globally.
     Metric: Lower Average Validation Loss across available games.
     """
+    if best_results is None:
+        return True
+    
+    final_old_losses = []
+    for g in GAMES:
+        key = f"loss_{g}"
+        final_old_losses.append(
+            best_results[key][-1]
+        )
     # Calculate avg loss for old vs new
-    final_old_losses = [l[-1] for _, l in old_loss_dict.items()]
     final_new_losses = [l[-1] for _, l in new_loss_dict.items()]
 
     old_loss = np.mean(final_old_losses)
     new_loss = np.mean(final_new_losses)
 
     return new_loss < old_loss
+
+
+def log_processed_params(params : dict):
+    with open(TOM_PARAM_LOG_FILE, "a", encoding="utf-8") as f:
+        json.dump(params, f)
+        f.write("\n")
+    return
+
+
+def load_processed_params(best_params):
+    if best_params is None:
+        return []
+    if not os.path.exists(TOM_PARAM_LOG_FILE):
+        return []
+
+    # Load parameters processed.
+    dictionaries = []
+    with open(TOM_PARAM_LOG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line in dictionaries:
+                dictionaries.append(json.loads(line))
+    return dictionaries
+
+
+def are_params_processed(processed_params : list[dict[str, float|int]], new_params : dict[str, float|int])->bool:
+    def dicts_equal_strict(d1: dict[str, float | int], d2: dict[str, float | int]) -> bool:
+        """Compare two dictionaries with strict type checking."""
+        if d1.keys() != d2.keys():
+            return False
+        for key in d1:
+            v1, v2 = d1[key], d2[key]
+            if type(v1) is not type(v2) or v1 != v2:
+                return False
+        return True
+
+    # Compare each param dict
+    for processed in processed_params:
+        if dicts_equal_strict(processed, new_params):
+            return True
+    return False
+
+
+
+if __name__ == "__main__":
+    train_worldmodel()

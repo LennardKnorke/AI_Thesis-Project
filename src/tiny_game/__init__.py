@@ -16,11 +16,11 @@ from tiny_hanabi.game.assemblers import get_game, normalize_payoffs
 from .my_hanabi import MyHanabi
     
     
-def get_game_Rework(gamename: GameNames, setting: Settings, normalize: bool = True):
+def get_game_Rework(gamename: GameNames, normalize: bool = True):
     if gamename.value == "G":
         game = MyHanabi(normalize=normalize)
     else:
-        game = get_game(gamename=gamename, setting=setting, normalize=normalize)
+        game = get_game(gamename=gamename, setting=Settings.decpomdp, normalize=normalize)
     return game
 
 
@@ -31,12 +31,6 @@ def get_all_possible_states(env : Game)->tuple:
     # Queue stores: tuple(state)
     processing_queue = deque(env.start_states())
 
-    if isinstance(env, DecPOMDP):
-        start_len = 2
-    elif isinstance(env, MyHanabi):
-        start_len = 4
-    else:
-        raise ValueError("Unknown Environment Type")
     max_len = env.horizon
 
     while processing_queue:
@@ -57,55 +51,15 @@ def get_all_possible_states(env : Game)->tuple:
         if isinstance(env, DecPOMDP):
             # TinyHanabi: All actions (0, 1) are always valid
             valid_next_actions = range(env.num_actions)
-
         elif isinstance(env, MyHanabi):
-            # --- MyHanabi Validity Logic ---
-            # 1. Separate Start Cards from History
-            past_actions = current_state[start_len:]
-            cards = current_state[:start_len]
-
-            # 2. Track which card INDICES have been played/consumed
-            # Indices 0,1 belong to P0. Indices 2,3 belong to P1.
-            consumed_indices = set()
-            
-            for i, past_action in enumerate(past_actions):
-                # Who acted? Even indices = P0, Odd indices = P1
-                past_actor = 0 if (i % 2 == 0) else 1
-
-                # It was a PLAY action Action 0 -> 1st card, Action 1 -> 2nd card
-                if past_action < 2: 
-                    offset = 0 if past_actor == 0 else 2
-                    card_idx = offset + past_action
-                    consumed_indices.add(card_idx)
-            
-            # 3. Determine Current Turn
-            current_actor = 0 if (len(past_actions) % 2 == 0) else 1
-            
-            # 4. Check candidates
-            for action in range(env.num_actions):
-                target_idx = -1
-
-                # PLAY I want to play MY card
-                if action < 2: 
-                    offset = 0 if current_actor == 0 else 2
-                    target_idx = offset + action
-                
-                # HINT (Action 2 or 3) I want to hint PARTNER'S card
-                else: 
-                    # Hint 0 (Act 2) -> Partner's 1st card
-                    # Hint 1 (Act 3) -> Partner's 2nd card
-                    hint_slot = action - 2
-                    partner_offset = 2 if current_actor == 0 else 0
-                    target_idx = partner_offset + hint_slot
-
-                # 5. Filter: Can only interact if card is NOT consumed
-                if target_idx not in consumed_indices:
-                    valid_next_actions.append(action)
-
-        
+            _, valid_next_actions = env.num_legal_actions()
+        else:
+            raise ValueError("Unknown Environment Type")
 
         for action in valid_next_actions:
-            new_state = list(current_state) + [action,]
+            env.reset(list(current_state))
+            env.step(action)
+            new_state = env.context()
             processing_queue.append(tuple(new_state))
 
     return tuple(all_states)
@@ -153,7 +107,7 @@ def get_all_possible_histories(env : Game):
         if obs_list not in unique_observations:
             unique_observations.add(obs_list)
             observations.append(total_)
-    return tuple(observations)
+    return tuple(observations), all_states
 
 
 GAMES = ["A", "B", "C", "D", "E", "F", "G"]

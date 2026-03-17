@@ -6,7 +6,7 @@ import os
 from tqdm import tqdm
 
 # Own Imports
-from tiny_game import GAMES, Settings, GameNames, DecPOMDP, get_game, get_game_Rework
+from tiny_game import GAMES, Settings, GameNames, DecPOMDP, get_game_Rework
 from runner import run_training
 from config import *
 
@@ -46,7 +46,7 @@ def hypersearch_algorithm(exp: Experiment,*args, **kwargs) -> None:
         # START - TRAIN PARAMS ON ALL GAMES
         for game_name in GAMES:
             # Set up Game Instance
-            ENV = get_game_Rework(GameNames(game_name), Settings.decpomdp, normalize=True)
+            ENV = get_game_Rework(GameNames(game_name), normalize=True)
 
             # Set up Agents
             AGENTS = exp.make_agents(ENV, params)
