@@ -31,7 +31,7 @@ TOM_PARAM_GRID = {
     "mental_dim": [16, 32],
     "trunk_dim": [16, 32, 64,],
     "lr": [0.001, 0.01],
-    "epochs": [500],
+    "epochs": [250],
     "batch_size" : [64]
 }
 def generate_param_combinations(grid: dict) -> list[dict]:
@@ -149,9 +149,9 @@ def train_worldmodel()->None:
             val_loss_list, obs_act_acc_list, obs_card_acc_list, act_acc_list, state_dict = train_evaluate_world_model(params, dataset, NUM_AGENT_TYPES, env)
             
             current_loss_per_game[game_name] = val_loss_list
-            current_obs_action_acc_per_game[game_name] = obs_act_acc_list[-1]  # Last epoch's action part accuracy
-            current_obs_card_acc_per_game[game_name] = obs_card_acc_list[-1]    # Last epoch's card part accuracy
-            current_act_acc_per_game[game_name] = act_acc_list[-1]              # Last epoch's action prediction accuracy
+            current_obs_action_acc_per_game[game_name] = obs_act_acc_list
+            current_obs_card_acc_per_game[game_name] = obs_card_acc_list
+            current_act_acc_per_game[game_name] = act_acc_list
             current_models_per_game[game_name] = state_dict
 
         # Compute averages across games
@@ -199,6 +199,34 @@ def train_worldmodel()->None:
         # Process Params tested
         processed_params.append(params)
         log_processed_params(params)
+
+
+
+
+    # Train best params for slightly longer
+    current_models_per_game = {}
+    pbar2 = tqdm(full_dataset.items(), desc="Iterate over Games", leave=False)
+    best_params['epochs'] = 1000
+    results_data = {}
+    for game_name, dataset in pbar2:
+        #pbar2.set_postfix()
+        env = environments[game_name]
+
+        val_loss_list, obs_act_acc_list, obs_card_acc_list, act_acc_list, state_dict = train_evaluate_world_model(best_params, dataset, NUM_AGENT_TYPES, env)
+        
+        results_data[f"loss_{game_name}"] = val_loss_list
+        results_data[f"obs_act_acc_{game_name}"] = obs_act_acc_list
+        results_data[f"obs_card_acc_{game_name}"] = obs_card_acc_list
+        results_data[f"act_acc_{game_name}"] = act_acc_list
+        current_models_per_game[game_name] = state_dict
+    
+    df = pd.DataFrame(results_data)
+    df.to_csv(os.path.join(WORLD_MODELS_DIR, "final_results.csv"), index=False)
+    # Save Models
+    for game_name, state_dict in current_models_per_game.items():
+        save_path = os.path.join(WORLD_MODELS_DIR, f"WM_{game_name}.pth")
+        torch.save(state_dict, save_path)
+
     return
 
 

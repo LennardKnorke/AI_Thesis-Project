@@ -10,7 +10,7 @@ from agents import *
 
 # Episode Macros
 TRAINING_EPISODES_HYPERSEARCH = 1_000
-TRAINING_EPISODES_FINAL = 100_000
+TRAINING_EPISODES_FINAL = 10_000
 
 # Directory Macros
 HYPERSEARCH_RESULTS_DIR = "HyperSearchResults"

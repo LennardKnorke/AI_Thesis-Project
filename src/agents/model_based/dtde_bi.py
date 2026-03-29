@@ -29,7 +29,7 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
     ):
         super().__init__(env, num_cards, num_actions)
         self.agent_id = agent_id
-        self.NULL_VALUE = -1
+        self.gamma = 0.99
 
         # Cache observations for planning
         self.legal_actions_cache : dict[tuple, tuple]= {}
@@ -43,6 +43,7 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         return
 
     def _init_tables(self):
+        
         for history, done, turn_id, reward in self.all_private_histories:
             if done:
                 self.v_values[history] = reward
@@ -56,9 +57,60 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
                 self.legal_actions_cache[history] = possible_actions
                 self.policy[history] = random.choice(possible_actions)
         return
-    
-    def calc_expected_reward(self, obs)->float:
-        return 0.0
+
+    def _get_consistent_worlds(self, obs: tuple) -> list[tuple]:
+        if obs in self.worlds_cache:
+            return self.worlds_cache[obs]
+
+        consistent = []
+        # Determine which part of the history is masked
+        if self.is_decpomdp:
+            # obs format: (p0_card? or -1, p1_card? or -1, actions...)
+            deal_obs = obs[:2]
+            hist_obs = obs[2:]
+            deal_len = 2
+        else:  # MyHanabi
+            deal_obs = obs[:4]
+            hist_obs = obs[4:]
+            deal_len = 4
+
+        for deal in self.env.start_states():
+            # Check deal compatibility
+            match = True
+            for i in range(deal_len):
+                if deal_obs[i] != -1 and deal_obs[i] != deal[i]:
+                    match = False
+                    break
+            if not match:
+                continue
+
+            # Replay the public actions to see if they are legal and produce the observed private info
+            self.env.reset(list(deal))
+            legal_so_far = True
+            for t, event in enumerate(hist_obs):
+                if self.is_decpomdp:
+                    # event is an action
+                    if self.env.is_terminal():
+                        legal_so_far = False
+                        break
+                    # Check legality (in DecPOMDP all actions are always legal)
+                    self.env.step(event)
+                else:  # MyHanabi: event is (action, observed_card)
+                    action, obs_card = event
+                    legal_mask, _ = self.env.num_legal_actions()
+                    if legal_mask[action] == 0:
+                        legal_so_far = False
+                        break
+                    self.env.step(action)
+                    # After step, check that the observed card matches what was actually revealed
+                    if self.env.history[-1][1] != obs_card:
+                        legal_so_far = False
+                        break
+            if legal_so_far:
+                consistent.append(tuple(list(deal) + list(hist_obs)))
+
+        self.worlds_cache[obs] = consistent
+        return consistent
 
     def train(self) -> float:
         """
@@ -67,100 +119,55 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         max_delta = 0.0
         
         # Sort observation longest first
-        for i, (obs, done, turn_id, reward) in enumerate(self.all_private_histories):
-            if done:
-                continue
-            if turn_id != self.agent_id:
+        for obs, done, turn_id, _ in self.all_private_histories:
+            if done or turn_id != self.agent_id:
                 continue
 
-            delta = self._optimize_node(obs)
-            if delta > max_delta:
-                max_delta = delta
+            old_val = self.v_values[obs]
+            new_val, best_act = self._evaluate_observation(obs)
+            self.v_values[obs] = new_val
+            self.policy[obs] = best_act
+            max_delta = max(max_delta, abs(old_val - new_val))
         return max_delta
 
-    def _optimize_node(self, hist) -> float:
-        old_val = self.v_values[hist]
-        legal_actions = self.legal_actions_cache[hist]
+    def _evaluate_observation(self, obs: tuple) -> tuple[float, int]:
+        """Compute the value and best action for a given private observation."""
+        legal_actions = self.legal_actions_cache[obs]
+        worlds = self._get_consistent_worlds(obs)
 
-        worlds = self._get_consistent_worlds(hist)
-        
-        # Initialize with -infinity so any valid path overwrites it
         best_value = -float('inf')
-        best_action = legal_actions[0]
+        best_action = legal_actions[0]  # fallback
 
         for action in legal_actions:
             total = 0.0
-            valid_worlds = 0
-
-            for world_state in worlds:                
-                # A. Reset Env to this specific world
-                # B. Take Step
+            count = 0
+            for full_state in worlds:
+                # Reset to this world and advance to the current point
+                self.env.reset(list(full_state))
                 try:
-                    self.env.reset(list(world_state))
                     self.env.step(action)
                 except ValueError:
-                    # Action invalid in this specific world 
-                    continue
-                valid_worlds += 1
+                    continue  # action illegal in this world
+                count += 1
 
-                # C. Check Consequence
                 if self.env.is_terminal():
                     total += self.env.payoff()
-                    continue
+                else:
+                    # Get next private observation for the same agent (next turn of this agent)
+                    next_full = tuple(self.env.history)
+                    next_obs = self._mask_state(next_full)
+                    total += self.gamma * self.v_values[next_obs]
 
-                next_history = tuple(self.env.history)
-                next_obs = self._mask_state(next_history)
-                total += self.v_values[next_obs]
+            if count > 0:
+                avg = total / count
+                if avg > best_value:
+                    best_value = avg
+                    best_action = action
 
-            if valid_worlds == 0:
-                continue
-
-            avg = total / valid_worlds
-            if avg > best_value:
-                best_value = avg
-                best_action = action
-
-        self.policy[hist] = best_action
-        self.v_values[hist] = best_value
-        return abs(old_val - best_value)
-
-    def _get_consistent_worlds(self, obs: tuple) -> list[tuple]:
-        """
-        Returns all possible ground-truth histories consistent with the observation.
-        Uses caching for speed.
-        """
-        if obs in self.worlds_cache:
-            return self.worlds_cache[obs]
-        
-        consistent = []
-        
-        all_deals = self.env.start_states()
-        
-        # Extract the visible part of the deal from obs
-        if self.is_decpomdp:
-            obs_deal = obs[:2]
-            obs_history = obs[2:]
-            deal_len = 2
-        else:
-            obs_deal = obs[:4]
-            obs_history = obs[4:]
-            deal_len = 4
-            
-        for deal in all_deals:
-            match = True
-            for i in range(deal_len):
-                # If obs has -1, any card is valid.
-                if obs_deal[i] != -1 and obs_deal[i] != deal[i]:
-                    match = False
-                    break
-            
-            if match:
-                # Construct the full state candidate
-                candidate_state = tuple(list(deal) + list(obs_history))
-                consistent.append(candidate_state)
-        
-        self.worlds_cache[obs] = consistent
-        return consistent
+        # If no world allowed the action (should not happen for a reachable obs), keep previous value
+        if best_value == -float('inf'):
+            best_value = self.v_values[obs]
+        return best_value, best_action
 
     def act(self, input_state: tuple, exploit: bool = False, *args, **kwargs) -> int:
         action = self.policy[input_state]
@@ -205,7 +212,7 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
                 s_list[0] = -1
             else:
                 s_list[1] = -1
-        elif self.is_myhanabi:
+        else:
             # history: [c0a, c0b, c1a, c1b, a1, a2...]
             num_actions = len(state) - 4
             p0_turn = (num_actions % 2 == 0)

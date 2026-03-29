@@ -13,7 +13,7 @@ from .model_based.dtde_bi import DTDE_BI_MB_Agent
 from .model_based.ctde_bi import CTDE_BI_MB_Agent, CTDE_BI_MB_List
 
 # TOM
-from .model_based.dtde_ToM import DTDE_ToMBI_Agent, ToM_WorldModel, ToMBI_AgentList
+from .model_based.dtde_ToM import DTDE_ToMBI_Agent, ToM_WorldModel
 
 __all__ = [
     "AgentList", "BaseAgent",
@@ -24,5 +24,5 @@ __all__ = [
 
     "DTDE_BI_MB_Agent",
     "CTDE_BI_MB_Agent", "CTDE_BI_MB_List",
-    "DTDE_ToMBI_Agent", "ToM_WorldModel", "ToMBI_AgentList"
+    "DTDE_ToMBI_Agent", "ToM_WorldModel"
 ]

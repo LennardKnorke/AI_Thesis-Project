@@ -65,7 +65,7 @@ class BaseAgent:
 class ModelBasedAgent(BaseAgent, ABC):
     MODEL_BASED = True
     def __init__(self, env : Game, num_card : int, num_actions:int):
-        super.__init__(env, num_card, num_actions)
+        super().__init__(env, num_card, num_actions)
         self.is_decpomdp = isinstance(self.env, DecPOMDP)
         self.is_myhanabi = isinstance(self.env, MyHanabi)
 

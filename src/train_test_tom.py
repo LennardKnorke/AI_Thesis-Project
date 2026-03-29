@@ -87,14 +87,6 @@ def load_all_world_models(device: str, environments) -> dict[str, tuple[ToM_Worl
 # --- End of helper functions ---
 
 
-# Define the ToM Experiment (for the Experiment registry)
-TOM_EXPERIMENT = Experiment(
-    name="DTDE ToMBI",
-    agent_class=DTDE_ToMBI_Agent, # Refers to the individual agent class
-    # max_iterations for model-based planning (BFS + BI) and attempts for random restarts (not applicable for BI usually)
-    param_list=[{"max_iterations": 5}], 
-    list_class=ToMBI_AgentList # This is the wrapper for the single ToMBI agent
-)
 
 def train_test_tom():
     """
@@ -103,7 +95,7 @@ def train_test_tom():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Path Preliminaries
-    tom_results_dir = TOM_EXPERIMENT.name.replace(" ", "_")
+    tom_results_dir = "DTDE ToMBI".replace(" ", "_")
     tom_results_dir = os.path.join(RESULTS_DIR, tom_results_dir)
     os.makedirs(tom_results_dir, exist_ok=True)
     
@@ -123,68 +115,121 @@ def train_test_tom():
 
     # Train and evaluate    
     all_evaluation_results = {}
-    pbar_games = tqdm(GAMES, desc=f"Processing Games for {TOM_EXPERIMENT.name}")
-    for game_name in pbar_games:
+    pbar = tqdm(GAMES, desc=f"DTDE_ToMBI")
+    for game_name in pbar:
+        postfix = {
+            "Game" : game_name
+        }
+        pbar.set_postfix(postfix)
+
         if game_name not in world_models_by_game:
-            pbar_games.write(f"[SKIPPING] Game {game_name}: No World Model loaded.")
+            pbar.write(f"[SKIPPING] Game {game_name}: No World Model loaded.")
             continue
         if game_name not in baseline_agents_by_game:
-            pbar_games.write(f"[SKIPPING] Game {game_name}: No Baseline Agents loaded.")
+            pbar.write(f"[SKIPPING] Game {game_name}: No Baseline Agents loaded.")
             continue
         if game_name not in ensembles:
-            pbar_games.write(f"[SKIPPING] Game {game_name}: No Ensemble")
+            pbar.write(f"[SKIPPING] Game {game_name}: No Ensemble")
             continue
 
         # Select Environment
-        env = environments[game_name]
-        world_model, wm_config = world_models_by_game[game_name]
         baseline_agents = baseline_agents_by_game[game_name]
+        world_model, wm_config = world_models_by_game[game_name]
+        ensemble = ensembles[game_name]
+        env = environments[game_name]
 
         # Set up ToM Agent
-        tom_agent = DTDE_ToMBI_Agent(
+        tom_agent_p0 = DTDE_ToMBI_Agent(
             env=env,
             num_cards = env.num_cards,
-            ensemble=ensembles[game_name],
+            ensemble=ensemble,
             num_actions=env.num_actions,
             world_model=world_model,
             world_model_config=wm_config,
             device=device,
-            gamma=0.99
+            gamma=0.99,
+            agent_id = 0
         )
-        agent_list : ToMBI_AgentList = ToMBI_AgentList(tom_agent, baseline_agents)
+        tom_agent_p1 = DTDE_ToMBI_Agent(
+            env=env,
+            num_cards = env.num_cards,
+            ensemble=ensemble,
+            num_actions=env.num_actions,
+            world_model=world_model,
+            world_model_config=wm_config,
+            device=device,
+            gamma=0.99,
+            agent_id = 1
+        )
+        agent_list : AgentList = AgentList([tom_agent_p0, tom_agent_p1])
 
         # Prep Training + testing
-        test_results = []
-        train_results = []
+        p0_loss_results = []
+        p1_loss_results = []
+
+        reward_results = []
+        p0_reward_results = []
+        p1_reward_results = []
         start_states = env.start_states()
 
-        n_rewards = len(start_states) * len(agent_list.baseline_agents.keys()) * 2
         # Planning and Testing Step
-        for it in range(5):
+        pbar_2 = tqdm(range(5), desc="Iterations", leave=False)
+
+        p0_reward = None
+        p1_reward = None
+        reward = None
+        for it in pbar_2:
+            postfix_2 = {
+                "Iter" : it,
+                "Rew" : reward if reward else "None",
+                "Rew_p0" : p0_reward if p0_reward else "None",
+                "Rew_p1" : p1_reward if p1_reward else "None",
+            }
+            pbar_2.set_postfix(postfix_2)
+
             # Planning
-            max_delta = tom_agent.train()
-            train_results.append(max_delta)
+            p0_delta = tom_agent_p0.train()
+            p0_loss_results.append(p0_delta)
+            p1_delta = tom_agent_p1.train()
+            p1_loss_results.append(p1_delta)
 
             # Testing
-            total_reward = 0.0
+            p0_reward = 0.0
+            p1_reward = 0.0
+            reward = 0.0
+
             
             for s0 in start_states:
-                for b_agent in agent_list.baseline_agents.keys():
-                    for side in [0,1]:
-                        agent_list.set_current_partner(b_agent, side)
-                        episode = run_episode(env, agent_list, s0, True)
+                ep = run_episode(env, agent_list, s0, True)
+                reward += ep[-1]
 
-                        total_reward += episode[-1]
-                    #
-            avg_reward = total_reward // n_rewards
-            test_results.append(avg_reward)
-            pbar_games.write(f"Iter {it}: Loss={max_delta:.4f}, Avg Reward={avg_reward:.4f}")
+                for base_agent_type in baseline_agents.keys():
+                    p0_agent_list = AgentList([tom_agent_p0, baseline_agents[base_agent_type][1]])
+                    p1_agent_list = AgentList([baseline_agents[base_agent_type][0], tom_agent_p1])
+
+                    p0_ep = run_episode(env, p0_agent_list, s0, True)
+                    p0_reward += p0_ep[-1]
+                    p1_ep = run_episode(env, p1_agent_list, s0, True)
+                    p1_reward += p1_ep[-1]
+
+            # Average reward
+            reward = reward / len(start_states)
+            p0_reward = p0_reward / (len(start_states) * len(baseline_agents.keys()))
+            p1_reward = p1_reward / (len(start_states) * len(baseline_agents.keys()))
+            reward_results.append(reward)
+            p0_reward_results.append(p0_reward)
+            p1_reward_results.append(p1_reward)
+
         # Save Game specific policies
-        agent_statedict_path = os.path.join(tom_results_dir, f"G_{game_name}_agent.pkl")
-        agent_list.save(agent_statedict_path)
+        tom_agent_p0.save(os.path.join(tom_results_dir, f"G_{game_name}_agent_0.pkl"))
+        tom_agent_p1.save(os.path.join(tom_results_dir, f"G_{game_name}_agent_1.pkl"))
 
-        all_evaluation_results[f"reward_{game_name}"] = test_results
-        all_evaluation_results[f"loss_{game_name}"] = train_results
+        # Cache Results
+        all_evaluation_results[f"reward_{game_name}"] = reward_results
+        all_evaluation_results[f"reward_{game_name}_0"] = p0_reward_results
+        all_evaluation_results[f"reward_{game_name}_1"] = p1_reward_results
+        all_evaluation_results[f"loss_{game_name}_0"] = p0_loss_results
+        all_evaluation_results[f"loss_{game_name}_1"] = p1_loss_results
 
     # Save Results
     results_df = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in all_evaluation_results.items()]))

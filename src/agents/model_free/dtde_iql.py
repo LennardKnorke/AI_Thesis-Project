@@ -5,6 +5,7 @@ import os
 import pickle
 from typing import Any
 
+
 from tiny_game import DecPOMDP, Game, MyHanabi
 from replaybuffer import ReplayBuffer, Transition # Using standard ReplayBuffer
 
@@ -34,6 +35,7 @@ class DTDE_QLearning_MF_Agent(ModelFreeAgent):
         super().__init__(env, num_cards, num_actions, *args, **kwargs)
 
         self.lr = lr
+        
         self.gamma = gamma
         
         self.epsilon = epsilon_start
@@ -149,7 +151,6 @@ class DTDE_QLearning_MF_Agent(ModelFreeAgent):
 
         # Epsilon decay
         self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
-        
         return total_loss / self.batch_size if self.batch_size > 0 else 0.0
     
     def save(self, save_path: str):

@@ -119,10 +119,6 @@ def _encode_observation(obs : int|tuple[int, int], obs_dim : int, env : Game, s0
 
 def _encode_action(action : int, action_dim : int):
     vec = np.zeros(action_dim, dtype=np.float32)
-    #if isinstance(action, (list, tuple)):
-    #    a = action[0]
-    #else:
-    #    a = action
     vec[action] = 1.0
     return vec
 
@@ -280,12 +276,20 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
     ):
         super().__init__(env, num_cards, num_actions)
         self.device = device
-        self.is_decpomdp = isinstance(self.env, DecPOMDP)
-        self.is_myhanabi = isinstance(self.env, MyHanabi)
-        self.num_cards_in_hand = 1 if self.is_decpomdp else 2
+        self.gamma = gamma
+
+        #self.num_cards_in_hand = 1 if self.is_decpomdp else 2
+        #self.horizon = 4 if self.is_decpomdp else 12
 
         self.world_model = world_model.to(device)
         self.world_model.eval() # Set to eval mode for inference
+
+        # Extract World Model configuration parameters
+        self.world_model_config = world_model_config
+        self.max_seq_len = world_model_config['max_seq_len']
+        self.obs_dim = world_model_config['obs_dim']
+        self.joint_obs_dim = world_model_config['joint_obs_dim']
+        self.action_dim = world_model_config['action_dim']
 
         self.ensemble : np.ndarray = ensemble
         self.ensemble_tensor = torch.tensor(
@@ -296,211 +300,258 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
 
         self.past_episode_context = ensemble.shape[0]
 
-        self.gamma = gamma
+        # caches
+        self.worlds_cache = {}
+        self.legal_actions_cache = {}
 
-        # Extract World Model configuration parameters
-        self.world_model_config = world_model_config
-        self.max_seq_len = world_model_config['max_seq_len']
-        self.obs_dim = world_model_config['obs_dim']
-        self.joint_obs_dim = world_model_config['joint_obs_dim']
-        self.action_dim = world_model_config['action_dim']
+        # planning tables
+        self.policy = {}
+        self.v_values = defaultdict(float)
 
-        # All possible ground-truth joint histories
-        all_histories, all_jh = get_all_possible_histories(self.env)
-        self.all_private_histories = sorted(
-            all_histories, 
-            key=lambda x: len(x[0]), 
-            reverse=True
-        )
-        self.all_joint_histories = sorted(
-            all_jh, 
-            key=lambda x: len(x[0]), 
-            reverse=True
-        )
-        
-        # Belief mapping: private history -> {joint history: probability}
-        self.private_to_joint_histories : dict[tuple, dict[tuple, float]] = {} # Private histories - {joint history - probablity}
-        
-        # Planning tables
-        self.v_values: dict[tuple, float] = {}      # Joint histories - Values
-        self.policy: dict[tuple, int|None] = {}     # Private histories - action
-        self.legal_actions_cache = {}               # Private histories - actions
-        
-        self.joint_transition_cache : dict[tuple, list[tuple]] = {}
-        self.partner_prediction_cache : dict[tuple, np.ndarray] = {}
-
-        self._init_legal_actions()
         self._init_tables()
-        #self._precompute_beliefs()
-        #self._precompute_joint_transitions()
         return
 
-    def _init_legal_actions(self):
-        for obs, done, turn_id, reward in self.all_private_histories:
+
+    def _init_tables(self):
+        for history, done, _, reward in self.all_private_histories:
+
             if done:
-                self.legal_actions_cache[obs] = ()
+                self.v_values[history] = reward
                 continue
 
             if self.is_decpomdp:
-                self.legal_actions_cache[obs] = tuple(range(self.num_actions))
-            elif self.is_myhanabi:
-                _, actions = self.env.num_legal_actions(obs)
-                self.legal_actions_cache[obs] = actions
+                legal = tuple(range(self.num_actions))
             else:
-                raise ValueError("No valid environment proided")
-    
-    def _init_tables(self):
-        # Init policy action
-        for obs, done, turn_id, reward in self.all_private_histories:
-            if obs not in self.v_values.keys():
-                self.v_values[obs] = reward
-            if done:
-                self.policy[obs] = None
-                self.v_values[obs] = reward
-            else:
-                acts = self.legal_actions_cache.get(obs, ())
-                if acts:
-                    self.policy[obs] = random.choice(acts)
-                else:
-                    self.policy[obs] = None 
-        return
-    
-    def _mask_state(self, joint_hist, player_id):
-        s_list = list(joint_hist)
-        if self.is_decpomdp:
-            if player_id == 0:
-                s_list[0] = -1
-            else:
-                s_list[1] = -1
-        else:
-            if player_id == 0: 
-                s_list[0] = -1; s_list[1] = -1
-            else: 
-                s_list[2] = -1; s_list[3] = -1
+                _, legal = self.env.num_legal_actions(history)
 
-        return tuple(s_list)
-    
-    def _get_joint_belief(self, private_hist):
-        return self.private_to_joint_histories.get(private_hist, {})
+            self.legal_actions_cache[history] = legal
+            self.policy[history] = random.choice(legal)
+            self.v_values[history] = 0.0
+
+
+    def _get_consistent_worlds(self, obs):
+        if obs in self.worlds_cache:
+            return self.worlds_cache[obs]
+        consistent = []
+
+        # Split cards actions
+        if self.is_decpomdp:
+            deal_obs = obs[:2]
+            hist_obs = obs[2:]
+            deal_len = 2
+        else:
+            deal_obs = obs[:4]
+            hist_obs = obs[4:]
+            deal_len = 4
+
+        # Loop over start states
+        for deal in self.env.start_states():
+            # Figure out match
+            match = True
+            for i in range(deal_len):
+                if deal_obs[i] != -1 and deal_obs[i] != deal[i]:
+                    match = False
+                    break
+
+            if not match:
+                continue
+
+            # If valid start cards, replay possible scenarios
+            self.env.reset(list(deal))
+            legal = True
+
+            for event in hist_obs:
+
+                if self.is_decpomdp:
+                    if self.env.is_terminal():
+                        legal = False
+                        break
+                    self.env.step(event)
+
+                else:
+                    action, obs_card = event
+                    mask, _ = self.env.num_legal_actions()
+
+                    if mask[action] == 0:
+                        legal = False
+                        break
+
+                    self.env.step(action)
+
+                    if self.env.history[-1][1] != obs_card:
+                        legal = False
+                        break
+
+            if legal:
+                consistent.append(tuple(list(deal) + list(hist_obs)))
+
+        self.worlds_cache[obs] = consistent
+        return consistent
+
+
+    def _predict_partner_policy(self, world, action, next_obs):
+        
+        # Ecnode joint history
+        is_p0_turn = bool(len(world) % 2 == 0)
+
+        world_hands = list(world[:self.min_hist_length])
+        actions = list(world[self.min_hist_length:])
+
+        joint_h = [world_hands] + actions
+
+        h_enc = np.zeros((self.max_seq_len, self.joint_obs_dim), dtype=np.float32)
+
+        for i, obs in enumerate(joint_h):
+            z_enc = _encode_joint_observation(obs, self.joint_obs_dim, self.env, world, is_p0_turn)
+            h_enc[i] = z_enc
+
+        a_enc = _encode_action(action, self.action_dim)
+        priv_z_enc = _encode_observation(next_obs, self.obs_dim, self.env, world, is_p0_turn)
+
+        next_obs_tensor = torch.tensor(priv_z_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
+        action_tensor = torch.tensor(a_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
+        hist_tensor = torch.tensor(h_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
+
+        with torch.no_grad():
+            logits, _, _ = self.world_model(
+                self.ensemble_tensor,
+                hist_tensor,
+                next_obs_tensor,
+                action_tensor
+            )
+
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+        return probs
 
 
     def train(self):
-        max_delta = 0
-        pbar_ = tqdm(self.all_private_histories, leave=False, desc="ToM-BI Planning")
-        for private_hist, done, _, _ in pbar_:
+
+        max_delta = 0.0
+
+        pbar = tqdm(self.all_private_histories, desc="Train Sweep", leave=False)
+        for priv_h, done, turn_id, reward in pbar:
+            postfix = {
+                "max_delta" : max_delta
+            }
+            pbar.set_postfix(postfix)
 
             if done:
                 continue
 
-            delta = self._optimize_private_node(private_hist)
+            old_val = self.v_values[priv_h]
 
-            max_delta = max(max_delta, delta)
+            new_val, best_action = self._evaluate_belief(priv_h)
+
+            self.v_values[priv_h] = new_val
+            self.policy[priv_h] = best_action
+
+            max_delta = max(max_delta, abs(old_val - new_val))
 
         return max_delta
     
-    def _optimize_private_node(self, private_hist):
-        # Determine whose turn it is from the private_hist length
- 
-        
-        return abs(0.0) # Return delta for convergence check
 
-    
-    def act(self, obs, exploit : bool, *args, **kwargs):
-        if not isinstance(obs, tuple):
-            obs = tuple(obs)
-        
-        action = self.policy.get(obs)
-        if action is None:
-            legal_actions = self.legal_actions_cache.get(obs, ())
-            if legal_actions:
-                return random.choice(legal_actions)
-            else:
-                raise ValueError(f"No policy or legal actions for observation: {obs}")
-        return action
-    
-    def save_transition(self, *args, **kwargs):
-        return
-    
-    def load(self, filepath: str, *args, **kwargs):
-        """Loads policy and V-values from file."""
-        with open(filepath, "rb") as f:
-            data = pickle.load(f)
-            
-        if not isinstance(data, dict):
-            raise ValueError("Invalid checkpoint format")
+    def _evaluate_belief(self, private_history):
+        legal_actions = self.legal_actions_cache[private_history]
 
-        if "policy" not in data or "v_values" not in data:
-            raise ValueError("Checkpoint missing required fields: 'policy' and 'v_values'.")
-        
-        self.policy = data["policy"]
-        self.v_values = data["v_values"]
-        print(f"Loaded ToM-BI agent from {filepath}")
-        return
+        worlds = self._get_consistent_worlds(private_history)
+
+        best_value = -float("inf")
+        best_action = legal_actions[0]
+
+        for action in legal_actions:
+            total_value = 0.0
+
+            for world in worlds:
+                self.env.reset(list(world))
+                self.env.step(action)
+
+                next_obs = self.env.context()[-1]
+                partner_probs = self._predict_partner_policy(world, action, next_obs)
+
+                if self.is_decpomdp:
+                    legal_partner = [i for i in range(self.num_actions)]
+                else:
+                    _, legal_partner = self.env.num_legal_actions()
+                
+                for partner_action in legal_partner:
+                
+                    p_partner = partner_probs[partner_action]
+                
+                    self.env_copy = deepcopy(self.env)
+                
+                    try:
+                        self.env_copy.step(partner_action)
+                    except:
+                        continue
+                    
+                    if self.env_copy.is_terminal():
+                    
+                        reward = self.env_copy.payoff()
+                
+                        total_value += p_partner * reward
+                
+                    else:
+                    
+                        next_state = tuple(self.env_copy.history)
+                        next_obs = self._mask_state(next_state)
+                
+                        total_value += p_partner * (
+                            self.gamma * self.v_values[next_obs]
+                        )
+
+            total_value /= max(len(worlds), 1)
+
+            if total_value > best_value:
+                best_value = total_value
+                best_action = action
+
+        return best_value, best_action
+
+
+    def act(self, private_history, exploit=False):
+        return self.policy[private_history]
     
-    def save(self, filepath: str, *args, **kwargs):
-        """Saves policy and V-values to file."""
+
+    def save(self, path):
+
         data = {
             "policy": self.policy,
-            "v_values": self.v_values
+            "values": dict(self.v_values)
         }
 
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-
-        with open(filepath, "wb") as f:
+        with open(path, "wb") as f:
             pickle.dump(data, f)
-        print(f"Saved ToM-BI agent to {filepath}")
+
+
+    def load(self, path):
+
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+
+        self.policy.update(data["policy"])
+        self.v_values.update(data["values"])
         return
-
-class ToMBI_AgentList(AgentList):
-    def __init__(self, tom_agent : DTDE_ToMBI_Agent, agents : dict[str, AgentList], *args, **kwargs):
-        self.baseline_agents = agents
-        self.tom_agent = tom_agent
-
-        super().__init__([tom_agent, tom_agent])
-
-        self.current_partner_name = None
-        self.tom_side = 0
-
-        first_partner = list(self.baseline_agents.keys())[0]
-        self.set_current_partner(first_partner, 0)
-        return
-
-
-    def set_current_partner(self, agent_name : str, side : int):
-        if agent_name not in self.baseline_agents:
-            raise ValueError(f"Unknown baseline agent {agent_name}")
-        
-        partner_agents = self.baseline_agents[agent_name]
-
-        self.clear()
-
-        if side == 0:
-            self.append(self.tom_agent)
-            self.append(partner_agents[1])
-        else:
-            self.append(partner_agents[0])
-            self.append(self.tom_agent)
-
-        self.tom_side = side
-        self.current_partner_name = agent_name
-        return
-
-    def train(self):
-        """
-        Only train the ToM agent.
-        """
-        return self.tom_agent.train()
     
-    def reset(self):
-        """
-        Reset both agents before a new run.
-        """
-        self.tom_agent.reset()
 
-        for agents in self.baseline_agents.values():
-            for a in agents:
-                a.reset()
+    def _mask_state(self, state):
 
-    def save(self, path : str, *args, **kwargs):
-        self.tom_agent.save(path)
-        return
+        s = list(state)
+
+        if self.is_decpomdp:
+            num_actions = len(state) - 2
+            p0_turn = (num_actions % 2 == 0)
+            if p0_turn:
+                s[0] = -1
+            else:
+                s[1] = -1
+        else:
+            num_actions = len(state) - 4
+            p0_turn = (num_actions % 2 == 0)
+
+            if p0_turn:
+                s[0] = -1
+                s[1] = -1
+            else:
+                s[2] = -1
+                s[3] = -1
+        return tuple(s)
