@@ -8,6 +8,7 @@ test.py
 *.pdf
 *.pkl
 *.pth
+*.npy
 
 *_results.csv
 !final_results.csv

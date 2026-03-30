@@ -49,7 +49,13 @@ AGENT_REGISTRY = [
         agent_class=CTDE_BI_MB_Agent,
         param_list=load_best_params("CTDE BI"),
         list_class=CTDE_BI_MB_List
-    )
+    ),
+    Experiment(
+        name="CTDE CIBI",
+        agent_class=CTDE_CIBI_MB_Agent,
+        param_list=load_best_params("CTDE CIBI"),
+        list_class=CTDE_CIBI_MB_List
+    ),
 ]
 
 

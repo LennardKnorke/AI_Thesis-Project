@@ -117,6 +117,12 @@ DTDE_BI_MB_params = [
 CTDE_BI_MB_params = [
     {"max_iterations": 1, "attempts": 3},
     {"max_iterations": 5, "attempts": 3},
+]
+
+# CTDE_CIBI_MB
+CTDE_CIBI_MB_params = [
+    {"max_iterations": 1, "attempts": 3},
+    {"max_iterations": 5, "attempts": 3},
 ] 
 
 
@@ -142,9 +148,15 @@ BASELINE_EXPERIMENTS = [
     ),
     Experiment(
         name="CTDE BI",
-        agent_class=CTDE_BI_MB_Agent, # Or appropriate executor
+        agent_class=CTDE_BI_MB_Agent,
         param_list=CTDE_BI_MB_params,
         list_class=CTDE_BI_MB_List
+    ),
+    Experiment(
+        name="CTDE CIBI",
+        agent_class=CTDE_CIBI_MB_Agent,
+        param_list=CTDE_CIBI_MB_params,
+        list_class=CTDE_CIBI_MB_List
     )
 ]
 
@@ -188,7 +200,13 @@ def load_best_baselinesagents():
             agent_class=CTDE_BI_MB_Agent,
             param_list=load_best_params("CTDE BI"),
             list_class=CTDE_BI_MB_List
-        )
+        ),
+        Experiment(
+            name="CTDE CIBI",
+            agent_class=CTDE_CIBI_MB_Agent,
+            param_list=load_best_params("CTDE CIBI"),
+            list_class=CTDE_CIBI_MB_List
+        ),
     ]
     return experiments
 

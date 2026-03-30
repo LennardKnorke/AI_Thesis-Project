@@ -1,5 +1,5 @@
 {
-    "char_dim": 8,
+    "char_dim": 16,
     "mental_dim": 32,
     "trunk_dim": 64,
     "lr": 0.01,

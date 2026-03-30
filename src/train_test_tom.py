@@ -150,6 +150,7 @@ def train_test_tom():
             gamma=0.99,
             agent_id = 0
         )
+        tqdm.write(f"{game_name} | Num. s0 : {len(env.start_states())} | Num. S {len(tom_agent_p0.all_joint_histories)} | Num priv h {len(tom_agent_p0.all_private_histories)}")
         tom_agent_p1 = DTDE_ToMBI_Agent(
             env=env,
             num_cards = env.num_cards,

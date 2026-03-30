@@ -255,7 +255,7 @@ def setup_baseline_agents(environments : dict[str, Game]):
 
             # Load Policies (centralized or decentralized)
             folder_name = os.path.join(RESULTS_DIR, exp.name.replace(" ", "_"))
-            if isinstance(new_agents, CTDE_BI_MB_List) or isinstance(new_agents, CTDE_VDN_MF_List):
+            if isinstance(new_agents, (CTDE_BI_MB_List, CTDE_CIBI_MB_List, CTDE_VDN_MF_List)):
                 shared_path = os.path.join(folder_name, f"G_{game_name}_shared_model.pkl")
                 new_agents.load(shared_path)
             else:
