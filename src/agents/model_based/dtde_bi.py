@@ -39,16 +39,16 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         self.policy: dict[tuple, int] = {}
         self.v_values: dict[tuple, float] = defaultdict(float)        
 
+        self.partner_policy: dict = {}   # set by AgentList before each planning sweep
+
         self._init_tables()
         return
 
     def _init_tables(self):
-        
         for history, done, turn_id, reward in self.all_private_histories:
             if done:
                 self.v_values[history] = reward
-                possible_actions = ()
-            else:
+            elif turn_id == self.agent_id:
                 self.v_values[history] = 0.0
                 if self.is_decpomdp:
                     possible_actions = tuple(range(self.num_actions))
@@ -56,6 +56,7 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
                     _, possible_actions = self.env.num_legal_actions(history)
                 self.legal_actions_cache[history] = possible_actions
                 self.policy[history] = random.choice(possible_actions)
+            # Partner non-terminal turns: no policy or V-value needed
         return
 
     def _get_consistent_worlds(self, obs: tuple) -> list[tuple]:
@@ -153,10 +154,9 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
                 if self.env.is_terminal():
                     total += self.env.payoff()
                 else:
-                    # Get next private observation for the same agent (next turn of this agent)
+                    # It's now the partner's turn — propagate through it
                     next_full = tuple(self.env.history)
-                    next_obs = self._mask_state(next_full)
-                    total += self.gamma * self.v_values[next_obs]
+                    total += self.gamma * self._get_partner_value(next_full)
 
             if count > 0:
                 avg = total / count
@@ -168,6 +168,55 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         if best_value == -float('inf'):
             best_value = self.v_values[obs]
         return best_value, best_action
+
+    def _get_partner_value(self, full_state: tuple) -> float:
+        """
+        Expected value through the partner's turn.
+
+        IBR mode  (partner_policy is set): use the partner's current planned
+        action for their private observation — one deterministic rollout.
+        Uniform mode (first iteration / fallback): average over all legal
+        partner actions with equal weight.
+        """
+        if self.is_decpomdp:
+            partner_legal = list(range(self.num_actions))
+        else:
+            _, partner_legal = self.env.num_legal_actions(full_state)
+
+        # --- IBR branch ---
+        if self.partner_policy:
+            partner_obs = self._mask_state(full_state)   # partner's private observation
+            p_action = self.partner_policy.get(partner_obs)
+            if p_action is not None and p_action in partner_legal:
+                self.env.reset(list(full_state))
+                try:
+                    self.env.step(p_action)
+                except ValueError:
+                    pass   # illegal in this world — fall through to uniform
+                else:
+                    if self.env.is_terminal():
+                        return self.env.payoff()
+                    next_full = tuple(self.env.history)
+                    next_obs  = self._mask_state(next_full)
+                    return self.gamma * self.v_values.get(next_obs, 0.0)
+
+        # --- Uniform fallback (first iteration or missing obs) ---
+        total = 0.0
+        count = 0
+        for p_action in partner_legal:
+            self.env.reset(list(full_state))
+            try:
+                self.env.step(p_action)
+            except ValueError:
+                continue
+            count += 1
+            if self.env.is_terminal():
+                total += self.env.payoff()
+            else:
+                next_full = tuple(self.env.history)
+                next_obs  = self._mask_state(next_full)
+                total += self.gamma * self.v_values.get(next_obs, 0.0)
+        return total / count if count > 0 else 0.0
 
     def act(self, input_state: tuple, exploit: bool = False, *args, **kwargs) -> int:
         action = self.policy[input_state]
@@ -195,6 +244,10 @@ class DTDE_BI_MB_Agent(ModelBasedAgent):
         self.v_values.update(data['v_values'])
         return
     
+    def set_partner_policy(self, policy: dict) -> None:
+        """Called by AgentList before each planning sweep to enable IBR."""
+        self.partner_policy = policy
+
     def save_transition(self, *args): pass
     def reset(self): pass
 

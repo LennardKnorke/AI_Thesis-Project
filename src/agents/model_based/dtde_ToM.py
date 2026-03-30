@@ -1,6 +1,6 @@
 # agents/model_based/dtde_ToM.py
 from collections import defaultdict, deque
-from copy import deepcopy
+
 import random
 import os
 from typing import Any
@@ -17,7 +17,7 @@ from ..base_agent import ModelBasedAgent, AgentList, BaseAgent
 
 
 
-def _encode_decPOMDP_jh(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool= False):
+def _encode_decPOMDP_jh(obs : int|tuple[int, int], obs_dim : int, env : Game):
     vec = np.zeros(obs_dim, dtype=np.float32)
     num_actions = env.num_actions
     num_cards = env.num_cards
@@ -34,7 +34,7 @@ def _encode_decPOMDP_jh(obs : int|tuple[int, int], obs_dim : int, env : Game, s0
     return vec
 
 
-def _encode_MyHanabi_jh(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool= False):
+def _encode_MyHanabi_jh(obs : int|tuple[int, int], obs_dim : int, env : Game):
     vec = np.zeros(obs_dim, dtype=np.float32)
     num_actions = env.num_actions
     num_cards = env.num_cards
@@ -57,16 +57,16 @@ def _encode_MyHanabi_jh(obs : int|tuple[int, int], obs_dim : int, env : Game, s0
     return vec
 
 
-def _encode_joint_observation(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool= False):
+def _encode_joint_observation(obs : int|tuple[int, int], obs_dim : int, env : Game):
     if isinstance(env, DecPOMDP):
-        return _encode_decPOMDP_jh(obs, obs_dim, env, s0, is_p0_turn)
+        return _encode_decPOMDP_jh(obs, obs_dim, env)
     elif isinstance(env, MyHanabi):
-        return _encode_MyHanabi_jh(obs, obs_dim, env, s0, is_p0_turn)
+        return _encode_MyHanabi_jh(obs, obs_dim, env)
     else:
         raise ValueError("Faulty Environment")
 
 
-def _encode_decPOMDP_o(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool = False):
+def _encode_decPOMDP_o(obs : int|tuple[int, int], obs_dim : int, env : Game):
     vec = np.zeros(obs_dim, dtype=np.float32)
     num_actions = env.num_actions
     num_cards = env.num_cards
@@ -82,7 +82,7 @@ def _encode_decPOMDP_o(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 
     return vec
 
 
-def _encode_MyHanabi_o(obs : tuple[int,...], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool = False):
+def _encode_MyHanabi_o(obs : tuple[int,...], obs_dim : int, env : Game):
     vec = np.zeros(obs_dim, dtype=np.float32)
     num_actions = env.num_actions
     num_cards = env.num_cards
@@ -108,11 +108,11 @@ def _encode_MyHanabi_o(obs : tuple[int,...], obs_dim : int, env : Game, s0 : lis
     return vec
 
 
-def _encode_observation(obs : int|tuple[int, int], obs_dim : int, env : Game, s0 : list|tuple|None = None, is_p0_turn : bool = False):
+def _encode_observation(obs : int|tuple[int, int], obs_dim : int, env : Game):
     if isinstance(env, DecPOMDP):
-        return _encode_decPOMDP_o(obs, obs_dim, env, s0, is_p0_turn)
+        return _encode_decPOMDP_o(obs, obs_dim, env)
     elif isinstance(env, MyHanabi):
-        return _encode_MyHanabi_o(obs, obs_dim, env, s0, is_p0_turn)
+        return _encode_MyHanabi_o(obs, obs_dim, env)
     else:
         raise ValueError("Faulty Environment")
 
@@ -162,19 +162,19 @@ class CharacterNet(nn.Module):
 class MentalNet(nn.Module):
     """
     Input:
-        - Output CharNet
+        - e_char: character embedding from CharacterNet
         - Current step-t joint/public history
     Output:
         - Embedding
     """
-    def __init__(self, input_dim, num_agent_types, embedding_dim):
+    def __init__(self, input_dim, char_embed_dim, embedding_dim):
         super().__init__()
-        self.lstm = nn.LSTM(input_dim + num_agent_types, embedding_dim, batch_first=True)
-    
-    def forward(self, current_history, identification_logits):
-        # Expand agent identity across sequence dimension
-        id_expanded = identification_logits.unsqueeze(1).expand(-1, current_history.size(1), -1)
-        x_mental = torch.cat([current_history, id_expanded], dim=2)
+        self.lstm = nn.LSTM(input_dim + char_embed_dim, embedding_dim, batch_first=True)
+
+    def forward(self, current_history, e_char):
+        # Expand character embedding across sequence dimension
+        e_char_expanded = e_char.unsqueeze(1).expand(-1, current_history.size(1), -1)
+        x_mental = torch.cat([current_history, e_char_expanded], dim=2)
 
         # LSTM forward
         _, (h_n, _) = self.lstm(x_mental)
@@ -207,23 +207,33 @@ class ToM_WorldModel(nn.Module):
         super().__init__()       
         # 1. Sub-Nets
         self.char_net = CharacterNet(joint_obs_dim, char_embed_dim, num_agent_types)
-        self.mental_net = MentalNet(joint_obs_dim, num_agent_types, mental_embed_dim)
-        
-        # 2. Prediction Trunk
-        self.trunk_input_dim = char_embed_dim + mental_embed_dim + obs_dim + action_dim
-        
-        self.trunk = nn.Sequential(
-            nn.Linear(self.trunk_input_dim, trunk_dim),
+        self.mental_net = MentalNet(joint_obs_dim, char_embed_dim, mental_embed_dim)
+
+        # 2a. Action trunk: psi^2_i = Pr(a^{-i}_t | h^i_t, h^{-i}_t, a^i_t)
+        #     Does NOT include z^i_{t+1} — it occurs causally after a^{-i}_t is chosen
+        self.action_trunk_input_dim = char_embed_dim + mental_embed_dim + action_dim
+        self.action_trunk = nn.Sequential(
+            nn.Linear(self.action_trunk_input_dim, trunk_dim),
             nn.ReLU(),
             nn.Linear(trunk_dim, trunk_dim),
             nn.ReLU()
         )
-        
+
+        # 2b. Observation trunk: psi^1_i = Pr(z^{-i}_{t+1} | h^i_t, h^{-i}_t, z^i_{t+1}, a^i_t)
+        #     Includes z^i_{t+1} (current_obs) as conditioning information
+        self.obs_trunk_input_dim = char_embed_dim + mental_embed_dim + obs_dim + action_dim
+        self.obs_trunk = nn.Sequential(
+            nn.Linear(self.obs_trunk_input_dim, trunk_dim),
+            nn.ReLU(),
+            nn.Linear(trunk_dim, trunk_dim),
+            nn.ReLU()
+        )
+
         # 3. Heads
         # Head A: Action Prediction -> P(a^{-i}_t)
         self.action_head = nn.Linear(trunk_dim, action_dim)
-        
-        # Head B: Observation Prediction
+
+        # Head B: Observation Prediction -> P(z^{-i}_{t+1})
         self.observation_head = nn.Linear(trunk_dim, obs_dim)
 
     def forward(self, past_episodes, current_history, current_obs, own_action):
@@ -236,17 +246,19 @@ class ToM_WorldModel(nn.Module):
         # Character embedding
         e_char, identity_logits = self.char_net(past_episodes)
 
-        # Mental embedding
-        e_mental = self.mental_net(current_history, identity_logits)
-        
-        # Trunk features
-        x_trunk = torch.cat([e_char, e_mental, current_obs, own_action], dim=1)
-        features = self.trunk(x_trunk)
-        
-        # Predictions
-        action_logits = self.action_head(features)
-        next_obs_pred = self.observation_head(features)
-        
+        # Mental embedding — conditioned on e_char (not logits)
+        e_mental = self.mental_net(current_history, e_char)
+
+        # Action prediction: psi^2_i — no z^i_{t+1} (causal constraint)
+        x_action = torch.cat([e_char, e_mental, own_action], dim=1)
+        action_features = self.action_trunk(x_action)
+        action_logits = self.action_head(action_features)
+
+        # Observation prediction: psi^1_i — conditioned on z^i_{t+1}
+        x_obs = torch.cat([e_char, e_mental, current_obs, own_action], dim=1)
+        obs_features = self.obs_trunk(x_obs)
+        next_obs_pred = self.observation_head(obs_features)
+
         return action_logits, next_obs_pred, identity_logits
 
 
@@ -263,18 +275,20 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
     within a unified belief space.
     """
     def __init__(
-        self, 
+        self,
         env: Game,
-        num_cards: int, 
-        num_actions: int, 
+        num_cards: int,
+        num_actions: int,
         world_model: ToM_WorldModel,
         world_model_config: dict[str, Any],
         ensemble : np.ndarray,
+        agent_id: int = 0,
         device: str = "cpu",
         gamma: float = 0.99,
         *args, **kwargs
     ):
         super().__init__(env, num_cards, num_actions)
+        self.agent_id = agent_id
         self.device = device
         self.gamma = gamma
 
@@ -313,10 +327,13 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
 
 
     def _init_tables(self):
-        for history, done, _, reward in self.all_private_histories:
+        for history, done, turn_id, reward in self.all_private_histories:
 
             if done:
                 self.v_values[history] = reward
+                continue
+
+            if turn_id != self.agent_id:
                 continue
 
             if self.is_decpomdp:
@@ -391,9 +408,7 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
 
     def _predict_partner_policy(self, world, action, next_obs):
         
-        # Ecnode joint history
-        is_p0_turn = bool(len(world) % 2 == 0)
-
+        # Encode joint history
         world_hands = list(world[:self.min_hist_length])
         actions = list(world[self.min_hist_length:])
 
@@ -402,11 +417,11 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
         h_enc = np.zeros((self.max_seq_len, self.joint_obs_dim), dtype=np.float32)
 
         for i, obs in enumerate(joint_h):
-            z_enc = _encode_joint_observation(obs, self.joint_obs_dim, self.env, world, is_p0_turn)
+            z_enc = _encode_joint_observation(obs, self.joint_obs_dim, self.env)
             h_enc[i] = z_enc
 
         a_enc = _encode_action(action, self.action_dim)
-        priv_z_enc = _encode_observation(next_obs, self.obs_dim, self.env, world, is_p0_turn)
+        priv_z_enc = _encode_observation(next_obs, self.obs_dim, self.env)
 
         next_obs_tensor = torch.tensor(priv_z_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
         action_tensor = torch.tensor(a_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
@@ -438,6 +453,9 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
             if done:
                 continue
 
+            if turn_id != self.agent_id:
+                continue
+
             old_val = self.v_values[priv_h]
 
             new_val, best_action = self._evaluate_belief(priv_h)
@@ -460,51 +478,58 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
 
         for action in legal_actions:
             total_value = 0.0
+            count = 0
 
             for world in worlds:
                 self.env.reset(list(world))
-                self.env.step(action)
+                try:
+                    self.env.step(action)
+                except ValueError:
+                    continue
+                count += 1
 
+                # If the focal agent's action ends the game, collect the reward directly
+                if self.env.is_terminal():
+                    total_value += self.env.payoff()
+                    continue
+
+                # Otherwise predict the partner's response and propagate
+                state_after_own_action = list(self.env.history)
                 next_obs = self.env.context()[-1]
                 partner_probs = self._predict_partner_policy(world, action, next_obs)
 
                 if self.is_decpomdp:
-                    legal_partner = [i for i in range(self.num_actions)]
+                    legal_partner = list(range(self.num_actions))
                 else:
-                    _, legal_partner = self.env.num_legal_actions()
-                
+                    _, legal_partner = self.env.num_legal_actions(tuple(state_after_own_action))
+
+                world_value = 0.0
                 for partner_action in legal_partner:
-                
                     p_partner = partner_probs[partner_action]
-                
-                    self.env_copy = deepcopy(self.env)
-                
+
+                    self.env.reset(state_after_own_action)
                     try:
-                        self.env_copy.step(partner_action)
-                    except:
+                        self.env.step(partner_action)
+                    except ValueError:
                         continue
-                    
-                    if self.env_copy.is_terminal():
-                    
-                        reward = self.env_copy.payoff()
-                
-                        total_value += p_partner * reward
-                
+
+                    if self.env.is_terminal():
+                        world_value += p_partner * self.env.payoff()
                     else:
-                    
-                        next_state = tuple(self.env_copy.history)
-                        next_obs = self._mask_state(next_state)
-                
-                        total_value += p_partner * (
-                            self.gamma * self.v_values[next_obs]
-                        )
+                        next_state = tuple(self.env.history)
+                        next_obs_masked = self._mask_state(next_state)
+                        world_value += p_partner * self.gamma * self.v_values[next_obs_masked]
 
-            total_value /= max(len(worlds), 1)
+                total_value += world_value
 
-            if total_value > best_value:
-                best_value = total_value
-                best_action = action
+            if count > 0:
+                avg = total_value / count
+                if avg > best_value:
+                    best_value = avg
+                    best_action = action
 
+        if best_value == -float("inf"):
+            best_value = self.v_values.get(private_history, 0.0)
         return best_value, best_action
 
 

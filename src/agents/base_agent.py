@@ -137,6 +137,11 @@ class AgentList(list[BaseAgent]):
         return joint_action
 
     def train(self):
+        # IBR: if agents expose set_partner_policy, exchange policies before
+        # each sweep so each agent plans against the other's current policy.
+        if len(self) == 2 and hasattr(self[0], 'set_partner_policy'):
+            self[0].set_partner_policy(dict(self[1].policy))
+            self[1].set_partner_policy(dict(self[0].policy))
         losses = []
         for agent in self:
             losses.append(agent.train())

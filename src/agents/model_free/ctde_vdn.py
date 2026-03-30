@@ -37,12 +37,12 @@ class CTDE_VDN_MF_Agent(ModelFreeAgent):
         # Local Epsilon (synced by list during training)
         self.epsilon = epsilon_start
 
-    def get_legal_actions_mask(self, obs: tuple[int]) -> np.ndarray:
+    def get_legal_actions_mask(self, history: tuple[int]) -> np.ndarray:
         """Helper to get legal actions mask for an observation."""
         if isinstance(self.env, DecPOMDP):
             return np.ones(self.num_actions, dtype=bool)
         else: # MyHanabi
-            mask, _ = self.env.num_legal_actions(full_history=obs)
+            mask, _ = self.env.num_legal_actions(full_history=history)
             return np.array(mask, dtype=bool)
     
     @property
@@ -148,12 +148,12 @@ class CTDE_VDN_MF_List(AgentList):
         # Initialize List
         super().__init__([agent_0, agent_1])
 
-    def get_legal_actions_mask(self, obs: tuple[int]) -> np.ndarray:
+    def get_legal_actions_mask(self, history: tuple[int]) -> np.ndarray:
         """Helper to get legal actions mask for an observation, used for Q-table init."""
-        if isinstance(self.agents[0].env, DecPOMDP): # Use agent's env to determine type
+        if isinstance(self[0].env, DecPOMDP): # Use agent's env to determine type
             return np.ones(self.num_actions, dtype=bool)
         else: # MyHanabi
-            mask, _ = self.agents[0].env.num_legal_actions(history=obs)
+            mask, _ = self[0].env.num_legal_actions(full_history=history)
             return np.array(mask, dtype=bool)
         
     def train(self) -> float:

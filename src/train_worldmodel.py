@@ -309,14 +309,23 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
 
     # PAST CONTEXT
     start_states = env.start_states()
-    PAST_EPISODES_CONTEXT = NUM_AGENT_TYPES * len(start_states)    
-    past_episodes_ensemble = _setup_ensemble(
-        env, baseline_agents, 
-        PAST_EPISODES_CONTEXT, 
-        MAX_SEQ_LEN,
-        JOINT_OBS_DIM,
-        game_name
+    EPISODES_PER_TYPE = len(start_states)
+    PAST_EPISODES_CONTEXT = NUM_AGENT_TYPES * EPISODES_PER_TYPE
+
+    # Mixed ensemble — one shared pool across all agent types (backup / testing)
+    mixed_ensemble = _setup_ensemble(
+        env, baseline_agents,
+        PAST_EPISODES_CONTEXT, MAX_SEQ_LEN, JOINT_OBS_DIM, game_name
     )
+
+    # Per-agent-type ensembles — CharNet sees only episodes from the target agent type
+    per_type_ensembles: dict[str, np.ndarray] = {}
+    for _type_name, _agents in baseline_agents.items():
+        per_type_ensembles[_type_name] = _setup_ensemble(
+            env, {_type_name: _agents},
+            EPISODES_PER_TYPE, MAX_SEQ_LEN, JOINT_OBS_DIM, game_name,
+            type_name=_type_name
+        )
 
     # Dataset
     DATASET_EPISODES = 15
@@ -335,133 +344,91 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
         memory_bank_train = []
         memory_bank_val = []
 
-        # Encode the current agents ####################################################################################
-        type_id_enc = np.zeros(NUM_AGENT_TYPES, dtype=np.float32)
-        type_id_enc[type_idx] = 1.0
-
         pbar3 = tqdm(range(DATASET_EPISODES), leave=False)
         for ep in pbar3:
             for s0 in start_states:
                 # Play an episode
-                full_episode_log = run_episode(env, agents_list, list(s0), True) # Returns history + payoff in list
-                full_history = full_episode_log[:-1] # Fully observable history (no masking)
+                full_episode_log = run_episode(env, agents_list, list(s0), True)
+                full_history = full_episode_log[:-1]
                 
                 # Split into cards and actions
                 cards = full_history[:start_len]
                 actions = full_history[start_len:]
-
-                # Private Hisotires
-                p0_cards = cards.copy()
-                p1_cards = cards.copy()
-
-                for i in range(len(cards)):
-                    if i < p0_card_cutoff_idx:
-                        p0_cards[i] = -1
-                    else:
-                        p1_cards[i] = -1
-
-                p0_history_seq = [p0_cards] + actions
-                p1_history_seq = [p1_cards] + actions
                 full_history = [cards] + actions
 
-                assert len(full_history) == len(p0_history_seq) and len(full_history) == len(p1_history_seq)
-
+                #
                 h_enc = np.zeros((MAX_SEQ_LEN, JOINT_OBS_DIM), dtype=np.float32)
-                is_p0_turn : bool = True
-
                 # Loop Over Timesteps to create inputs and outputs for each step
-                for i, (joint_obs, p0_obs, p1_obs) in enumerate(zip(full_history, p0_history_seq, p1_history_seq)):
-                    # Encode the current private observations
-                    p0_z_enc = _encode_observation(p0_obs, OBS_DIM, env, s0, is_p0_turn)
-                    p1_z_enc = _encode_observation(p1_obs, OBS_DIM, env, s0, is_p0_turn)
-
-                    # Encode step t joint observation/history 
-                    z_enc = _encode_joint_observation(joint_obs, JOINT_OBS_DIM, env, s0, is_p0_turn)
+                for i, joint_obs in enumerate(full_history):
+                    # t+1 index.
+                    next_idx = i + 1
+                    if next_idx >= len(full_history):
+                        break
+                    next_obs = full_history[next_idx]
+                    
+                    # Encode step t joint history: (h^i, h^k)_t = h_t
+                    z_enc = _encode_joint_observation(joint_obs, JOINT_OBS_DIM, env)
                     h_enc[i] = z_enc
 
-                    # Encode the action taken for both parties
-                    current_act_idx = i + 1
-                    if current_act_idx < len(full_history):
-                        current_act = full_history[current_act_idx]
+                    # Encode own action (always null), a_t
+                    priv_a_enc = _encode_action(null_action, ACT_DIM)
 
-                        if isinstance(current_act, (tuple, list)):
-                            current_act_int = current_act[0]  
-                        else:
-                            current_act_int = current_act
+                    # Encode own next obs z_{t+1}
+                    priv_z_enc = _encode_observation(next_obs, OBS_DIM, env)
 
-                        if is_p0_turn:
-                            p0_act_enc = _encode_action(current_act_int, ACT_DIM)
-                            p1_act_enc = _encode_action(null_action, ACT_DIM)
-                            p0_act_int = current_act_int
-                            p1_act_int = null_action
-                        else:
-                            p0_act_enc = _encode_action(null_action, ACT_DIM)
-                            p1_act_enc = _encode_action(current_act_int, ACT_DIM)
-                            p0_act_int = null_action
-                            p1_act_int = current_act_int
-                    else:
-                        break # Safety break
+                    # Encode partner next obs z_{t+1}. In this game z^k_{t+1}==z^i_{t+1}
+                    partner_z_enc = _encode_observation(next_obs, OBS_DIM, env)
+
+                    # Encode partner action, a^k_t
+                    partner_a_enc = next_obs[0] if isinstance(next_obs, (tuple, list)) else next_obs
+
                     
-                    # 3. Encode the next_obs
-                    next_obs_idx = current_act_idx # Action is seen.
-                    tgt_obs_ = full_history[next_obs_idx]
-                    next_obs_enc = _encode_observation(tgt_obs_, OBS_DIM, env, s0, is_p0_turn)
-
-
-                    p0_datapoint = {
-                        "obs" : p0_z_enc,
-                        "act" : p0_act_enc,
-                        "tgt_act": p1_act_int,
-                        "tgt_obs": next_obs_enc,
+                    datapoint = {
+                        "obs" : priv_z_enc,
+                        "act" : priv_a_enc,
+                        "tgt_act": partner_a_enc,
+                        "tgt_obs": partner_z_enc,
                         "tgt_type": type_idx,
                         # CRITICAL: Copy the current state of past episodes buffer
-                        "past_episodes": past_episodes_ensemble.copy(),
-                        "current_history": h_enc.copy()
-                    }
-                    p1_datapoint = {
-                        "obs": p1_z_enc,
-                        "act": p1_act_enc,
-                        "tgt_act": p0_act_int,
-                        "tgt_obs": next_obs_enc,
-                        "tgt_type": type_idx,
-                        # CRITICAL: Copy the current state of past episodes buffer
-                        "past_episodes": past_episodes_ensemble.copy(),
+                        "past_episodes": per_type_ensembles[type_name].copy(),
                         "current_history": h_enc.copy()
                     }
                   
                     # 5. Append relevant perspective to dataset
                     if ep < (DATASET_EPISODES * TRAIN_SIZE_RATIO):
-                        memory_bank_train.append(p0_datapoint)
-                        memory_bank_train.append(p1_datapoint)
+                        memory_bank_train.append(datapoint)
                     else:
-                        memory_bank_val.append(p0_datapoint)
-                        memory_bank_val.append(p1_datapoint)
-                    # Change flag
-                    is_p0_turn = not is_p0_turn
+                        memory_bank_val.append(datapoint)
 
         # Update total database with experiences of the current agent
         train_storage.extend(memory_bank_train)
         val_storage.extend(memory_bank_val)
-    return convert_game_dataset(train_storage, val_storage, OBS_DIM, JOINT_OBS_DIM, ACT_DIM, MAX_SEQ_LEN), past_episodes_ensemble
+    return convert_game_dataset(train_storage, val_storage, OBS_DIM, JOINT_OBS_DIM, ACT_DIM, MAX_SEQ_LEN), mixed_ensemble
 
 
-def _setup_ensemble(env : Game, baseline_agent : dict[AgentList], past_episodes_context, max_seq_len, obs_dim, game_name):
+def _setup_ensemble(env: Game, baseline_agent: dict[AgentList], past_episodes_context, max_seq_len, obs_dim, game_name, type_name: str | None = None):
     vec = np.zeros((past_episodes_context, max_seq_len, obs_dim))
 
-    ensemble_path = os.path.join(WORLD_MODELS_DIR, f"G_{game_name}_ensemble.npy")
+    # Per-agent-type ensemble OR mixed ensemble (type_name=None)
+    if type_name is not None:
+        safe_name = type_name.replace(" ", "_")
+        ensemble_path = os.path.join(WORLD_MODELS_DIR, f"G_{game_name}_{safe_name}_ensemble.npy")
+    else:
+        ensemble_path = os.path.join(WORLD_MODELS_DIR, f"G_{game_name}_ensemble.npy")
 
-    # Already_exists? load it
     if os.path.exists(ensemble_path):
-        tqdm.write(f"Loaded Game Ensemble: {game_name}")
+        tqdm.write(f"Loaded Ensemble: {os.path.basename(ensemble_path)}")
         vec = np.load(ensemble_path)
         return vec
-    
+
     start_states = env.start_states()
     cuttoff_idx = 2 if isinstance(env, DecPOMDP) else 4
     p_idx = 0
     while p_idx < past_episodes_context:
         for keys, agents in baseline_agent.items():
             for s0 in start_states:
+                if p_idx >= past_episodes_context:
+                    break
                 full_history = run_episode(env, agents, list(s0), test_episode=True)
                 full_history = full_history[:-1]
                 cards = full_history[:cuttoff_idx]
@@ -473,16 +440,15 @@ def _setup_ensemble(env : Game, baseline_agent : dict[AgentList], past_episodes_
                 # Encode current joint observation sequence
                 is_p0_turn = True
                 for i, obs in enumerate(full_history):
-                    z_enc = _encode_joint_observation(obs, obs_dim, env, s0, is_p0_turn)
+                    z_enc = _encode_joint_observation(obs, obs_dim, env)
                     is_p0_turn = not is_p0_turn
                     h_enc[i] = z_enc
 
-                # Copy in ensemble
                 vec[p_idx] = h_enc.copy()
                 p_idx += 1
 
     np.save(ensemble_path, vec)
-    tqdm.write(f"Created Game Ensemble: {game_name}")
+    tqdm.write(f"Created Ensemble: {os.path.basename(ensemble_path)}")
     return vec
 
 

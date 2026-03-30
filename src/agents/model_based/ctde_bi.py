@@ -188,10 +188,11 @@ class CTDE_BI_MB_List(AgentList):
                 continue
 
             best_val = -float('inf')
-            best_act = legal[0]
+            best_acts = [legal[0]]   # track all tied best actions for random tie-breaking
 
             for a in legal:
                 total = 0.0
+                count = 0
                 for joint_hist in worlds:
                     # Simulate taking action a from this world
                     self.env.reset(list(joint_hist))
@@ -199,17 +200,20 @@ class CTDE_BI_MB_List(AgentList):
                         self.env.step(a)
                     except ValueError:
                         continue   # action illegal in this world (should not happen)
+                    count += 1
                     if self.env.is_terminal():
                         total += self.env.payoff()
                     else:
                         next_hist = tuple(self.env.history)
                         total += self.gamma * self.v_values[next_hist]
-                if worlds:
-                    avg = total / len(worlds)
+                if count > 0:
+                    avg = total / count
                     if avg > best_val:
-                        best_val = avg
-                        best_act = a
-            self.policy[priv] = best_act
+                        best_val  = avg
+                        best_acts = [a]
+                    elif avg == best_val:
+                        best_acts.append(a)
+            self.policy[priv] = random.choice(best_acts)
 
     def save(self, filepath: str):
         os.makedirs(os.path.dirname(filepath), exist_ok=True)

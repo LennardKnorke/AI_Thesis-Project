@@ -54,12 +54,12 @@ class DTDE_QLearning_MF_Agent(ModelFreeAgent):
         #)
         return
     
-    def get_legal_actions_mask(self, obs: tuple[int]) -> np.ndarray:
+    def get_legal_actions_mask(self, history: tuple[int]) -> np.ndarray:
         """Helper to get legal actions mask for an observation."""
         if isinstance(self.env, DecPOMDP):
             return np.ones(self.num_actions, dtype=bool)
         else: # MyHanabi
-            mask, _ = self.env.num_legal_actions(full_history=obs)
+            mask, _ = self.env.num_legal_actions(full_history=history)
             return np.array(mask, dtype=bool)
 
     def act(self, input_state: tuple[int], exploit=False) -> int:
@@ -120,20 +120,17 @@ class DTDE_QLearning_MF_Agent(ModelFreeAgent):
         for transition in batch:
             state, action, reward, next_state, done = transition
 
-            # Lazy init Q-values for current state if not present
+            # Lazy init — uniform optimistic value; legal masking happens at act() time
             if state not in self.q_table:
-                self.q_table[state] = np.zeros(self.num_actions, dtype=np.float32)
-                self.q_table[state][self.get_legal_actions_mask(state)] = 10.0
+                self.q_table[state] = np.ones(self.num_actions, dtype=np.float32) * 10.0
 
             current_q = self.q_table[state][action]
-            
+
             # Calculate target Q-value
             target_q = reward
             if not done:
-                # Lazy init Q-values for next state if not present
                 if next_state not in self.q_table:
-                    self.q_table[next_state] = np.zeros(self.num_actions, dtype=np.float32)
-                    self.q_table[next_state][self.get_legal_actions_mask(next_state)] = 10.0
+                    self.q_table[next_state] = np.ones(self.num_actions, dtype=np.float32) * 10.0
 
                 # Max Q-value of next state (for Q-Learning)
                 next_q_values = self.q_table[next_state].copy()

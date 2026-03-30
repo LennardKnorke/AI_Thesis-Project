@@ -115,8 +115,8 @@ DTDE_BI_MB_params = [
 
 # CTDE_BI_MB
 CTDE_BI_MB_params = [
-    {"max_iterations": 1}, 
-    {"max_iterations": 5},
+    {"max_iterations": 1, "attempts": 3},
+    {"max_iterations": 5, "attempts": 3},
 ] 
 
 
