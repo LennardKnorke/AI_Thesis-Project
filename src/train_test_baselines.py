@@ -27,34 +27,28 @@ def load_best_params(agent_name: str) -> list[dict[str, Any]]:
 
 AGENT_REGISTRY = [
     Experiment(
-        name="DTDE QLearning",
-        agent_class=DTDE_QLearning_MF_Agent,
-        param_list=load_best_params("DTDE QLearning"),
+        name="IQ Learning",
+        agent_class=IQ_Learning_Agent,
+        param_list=load_best_params("IQ Learning"),
         list_class=AgentList
     ),
     Experiment(
-        name="CTDE VDN",
-        agent_class=CTDE_VDN_MF_Agent,
-        param_list=load_best_params("CTDE VDN"),
-        list_class=CTDE_VDN_MF_List
+        name="VDN",
+        agent_class=VDN_Agent,
+        param_list=load_best_params("VDN"),
+        list_class=VDN_CentralPlanner
     ),
     Experiment(
-        name="DTDE BI",
-        agent_class=DTDE_BI_MB_Agent,
-        param_list=load_best_params("DTDE BI"),
-        list_class=AgentList
+        name="PBVI",
+        agent_class=PBVI_Agent,
+        param_list=load_best_params("PBVI"),
+        list_class=PBVI_List
     ),
     Experiment(
-        name="CTDE BI",
-        agent_class=CTDE_BI_MB_Agent,
-        param_list=load_best_params("CTDE BI"),
-        list_class=CTDE_BI_MB_List
-    ),
-    Experiment(
-        name="CTDE CIBI",
-        agent_class=CTDE_CIBI_MB_Agent,
-        param_list=load_best_params("CTDE CIBI"),
-        list_class=CTDE_CIBI_MB_List
+        name="MA Belief DP",
+        agent_class=DP_Agent,
+        param_list=load_best_params("MA Belief DP"),
+        list_class=DP_List
     ),
 ]
 
@@ -73,12 +67,12 @@ def save_final_model(
     os.makedirs(agent_save_dir, exist_ok=True)
 
     # Save Agents
-    if agents.__class__.__name__.startswith("CTDE"):
-        # Centralized List (Shared Policy)
+    if agents.centralized_planning:
+        # Centralized list: single shared model file
         path = os.path.join(agent_save_dir, f"G_{game_name}_shared_model.pkl")
         agents.save(path)
     else:
-        # Independent Agents (Separate Files)
+        # Decentralized: one file per agent
         for i, agent in enumerate(agents):
             path = os.path.join(agent_save_dir, f"G_{game_name}_agent_{i}.pkl")
             agent.save(path)
@@ -106,7 +100,7 @@ def train_test_baselines():
         # Iterate over All Games
         for game_name in GAMES:
             # Setup Environment
-            game = get_game_Rework(GameNames(game_name), normalize=True)
+            game = get_game_Rework(GameNames(game_name))
             
             # Setup Agents
             agents = exp.make_agents(game, params)

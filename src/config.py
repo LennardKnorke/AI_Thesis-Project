@@ -6,7 +6,13 @@ import pandas as pd
 from typing import Any
 from tiny_game import GameNames, DecPOMDP
 
-from agents import *
+from agents import (
+    BaseAgent, ModelBasedAgent, AgentList,
+    IQ_Learning_Agent,
+    VDN_Agent, VDN_CentralPlanner,
+    PBVI_Agent, PBVI_List,
+    DP_Agent, DP_List,
+)
 
 # Episode Macros
 TRAINING_EPISODES_HYPERSEARCH = 1_000
@@ -39,37 +45,27 @@ class Experiment:
         self.param_list = param_list
         self.list_class = list_class
 
-    def make_agents(self, 
-                    env : DecPOMDP, 
+    def make_agents(self,
+                    env : DecPOMDP,
                     params: dict[str, Any]) -> AgentList:
         """
         Factory method to instantiate the agents for a specific environment and parameter set.
-        Automatically handles Model-Based vs Model-Free requirements (passing 'env').
         """
-        # 1. Prepare base arguments
         run_args = params.copy()
         run_args['num_cards'] = env.num_cards
         run_args['num_actions'] = env.num_actions
-
-        # 2. Determine if we need to inject 'env'
-        is_model_based_agent = issubclass(self.agent_class, ModelBasedAgent)
-        
-        # Heuristic check for List (since VDN lists might track the env)
-        # Assuming VDN VI/BI lists act as the primary model holder
-        list_name = self.list_class.__name__
-        is_model_based_list = "VI" in list_name or "BI" in list_name
-
         run_args['env'] = env
 
-        # Finally Set Up Agents
         if self.list_class is AgentList:
-            # --- DECENTRALIZED (Independent) ---
+            # Decentralized: two independent agent instances
             agents = [
-                self.agent_class(agent_id = 0,**run_args),
-                self.agent_class(agent_id = 1, **run_args)
+                self.agent_class(agent_id=0, **run_args),
+                self.agent_class(agent_id=1, **run_args),
             ]
             return AgentList(agents)
         else:
+            # Centralized list class (VDN_CentralPlanner, PBVI_List, DP_List)
+            # — creates its own child agents internally
             return self.list_class(**run_args)
 
     @property
@@ -84,80 +80,74 @@ def generate_param_grid(grid_dict):
     return [dict(zip(keys, v)) for v in itertools.product(*values)]
 
 # DTDE_QSarsa_MF
-DTDE_QLearning_MF_grid = {
+iql_rid = {
     'lr': [0.01, 0.001],
     'gamma': [0.99],
-    'batch_size': [64],
+    'batch_size': [32, 64, 128],
+    'updates_per_train' : [1, 3],
     'buffer_size': [250, 500, 1_000],
     'epsilon_start': [1.0],
     'epsilon_min': [0.05, 0.1],
     'epsilon_decay': [0.999, 0.9995, 0.9999]
 }
-DTDE_QLearning_MF_params = generate_param_grid(DTDE_QLearning_MF_grid)
+iql_params = generate_param_grid(iql_rid)
 
 # CTDE_VDN_MF
-CTDE_VDN_MF_grid = {
+vdn_grid = {
     "lr": [0.01, 0.001],
     'gamma': [0.99],
-    "batch_size": [64],
+    "batch_size": [32, 64, 128],
+    'updates_per_train' : [1, 3],
     'buffer_size': [250, 500, 1_000],
     "epsilon_start": [1.0],
     'epsilon_min': [0.05, 0.1],
     "epsilon_decay": [0.999, 0.9995, 0.9999]
 }
-CTDE_VDN_MF_params = generate_param_grid(CTDE_VDN_MF_grid)
+vdn_params = generate_param_grid(vdn_grid)
 
-# DTDE_BI_MB
-DTDE_BI_MB_params = [
-    {"max_iterations": 1}, 
-    {"max_iterations": 5},
-] 
-
-# CTDE_BI_MB
-CTDE_BI_MB_params = [
+# PBVI
+PBVI_params = [
     {"max_iterations": 1, "attempts": 3},
     {"max_iterations": 5, "attempts": 3},
+    {"max_iterations" : 10, "attempts" : 3},
+    {"max_iterations" : 50, "attempts" : 3}
 ]
 
-# CTDE_CIBI_MB
-CTDE_CIBI_MB_params = [
+# MA-Belief-DP
+DP_params = [
     {"max_iterations": 1, "attempts": 3},
     {"max_iterations": 5, "attempts": 3},
-] 
+    {"max_iterations" : 10, "attempts" : 3},
+    {"max_iterations" : 50, "attempts" : 3}
+]
 
 
 # Define Experiments List
 BASELINE_EXPERIMENTS = [
     Experiment(
-        name="DTDE QLearning",
-        agent_class=DTDE_QLearning_MF_Agent,
-        param_list=DTDE_QLearning_MF_params,
+        name="IQ Learning",
+        agent_class=IQ_Learning_Agent,
+        param_list=iql_params,
         list_class=AgentList
     ),
     Experiment(
-        name="CTDE VDN",
-        agent_class=CTDE_VDN_MF_Agent,
-        param_list=CTDE_VDN_MF_params,
-        list_class=CTDE_VDN_MF_List
+        name="VDN",
+        agent_class=VDN_Agent,
+        param_list=vdn_params,
+        list_class=VDN_CentralPlanner
     ),
     Experiment(
-        name="DTDE BI",
-        agent_class=DTDE_BI_MB_Agent,
-        param_list=DTDE_BI_MB_params,
-        list_class=AgentList
+        name="PBVI",
+        agent_class=PBVI_Agent,
+        param_list=PBVI_params,
+        list_class=PBVI_List
     ),
     Experiment(
-        name="CTDE BI",
-        agent_class=CTDE_BI_MB_Agent,
-        param_list=CTDE_BI_MB_params,
-        list_class=CTDE_BI_MB_List
+        name="MA Belief DP",
+        agent_class=DP_Agent,
+        param_list=DP_params,
+        list_class=DP_List
     ),
-    Experiment(
-        name="CTDE CIBI",
-        agent_class=CTDE_CIBI_MB_Agent,
-        param_list=CTDE_CIBI_MB_params,
-        list_class=CTDE_CIBI_MB_List
-    )
 ]
 
 NUM_AGENT_TYPES = len(BASELINE_EXPERIMENTS)
@@ -178,34 +168,28 @@ def load_best_params(agent_name : str):
 def load_best_baselinesagents():
     experiments = [
         Experiment(
-            name="DTDE QLearning",
-            agent_class=DTDE_QLearning_MF_Agent,
-            param_list=load_best_params("DTDE QLearning"),
+            name="IQ Learning",
+            agent_class=IQ_Learning_Agent,
+            param_list=load_best_params("IQ Learning"),
             list_class=AgentList
         ),
         Experiment(
-            name="CTDE VDN",
-            agent_class=CTDE_VDN_MF_Agent,
-            param_list=load_best_params("CTDE VDN"),
-            list_class=CTDE_VDN_MF_List
+            name="VDN",
+            agent_class=VDN_Agent,
+            param_list=load_best_params("VDN"),
+            list_class=VDN_CentralPlanner
         ),
         Experiment(
-            name="DTDE BI",
-            agent_class=DTDE_BI_MB_Agent,
-            param_list=load_best_params("DTDE BI"),
-            list_class=AgentList
+            name="PBVI",
+            agent_class=PBVI_Agent,
+            param_list=load_best_params("PBVI"),
+            list_class=PBVI_List
         ),
         Experiment(
-            name="CTDE BI",
-            agent_class=CTDE_BI_MB_Agent,
-            param_list=load_best_params("CTDE BI"),
-            list_class=CTDE_BI_MB_List
-        ),
-        Experiment(
-            name="CTDE CIBI",
-            agent_class=CTDE_CIBI_MB_Agent,
-            param_list=load_best_params("CTDE CIBI"),
-            list_class=CTDE_CIBI_MB_List
+            name="MA Belief DP",
+            agent_class=DP_Agent,
+            param_list=load_best_params("MA Belief DP"),
+            list_class=DP_List
         ),
     ]
     return experiments
@@ -224,7 +208,7 @@ tom_worldmodel_params : list[dict[str, float | str | int]]= generate_param_grid(
 
 
 # --- THEORY OF MIND AGENT HYPERPARAMETERS ---
-DTDE_ToMBI_params = [
-    {"max_iterations": 1}, 
+ToM_PBVI_params = [
+    {"max_iterations": 1},
     {"max_iterations": 5},
-] 
+]

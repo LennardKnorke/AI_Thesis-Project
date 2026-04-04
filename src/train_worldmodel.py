@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from tiny_game import GAMES, Settings, GameNames, get_game_Rework, MyHanabi, DecPOMDP, Game
 from agents import ToM_WorldModel
-from agents.model_based.dtde_ToM import _encode_observation, _encode_action, _encode_joint_observation
+from agents.model_based.ToM_pbvi import _encode_observation, _encode_action, _encode_joint_observation
 from runner import run_episode
 from config import * 
 from train_test_baselines import load_best_baselinesagents
@@ -233,7 +233,7 @@ def train_worldmodel()->None:
 def setup_hanabi_environments()->dict[str, Game]:
     environments = {}
     for game_name in GAMES:
-        tmp_env = get_game_Rework(GameNames(game_name), normalize=True)
+        tmp_env = get_game_Rework(GameNames(game_name))
         environments[game_name] = tmp_env
     return environments
 
@@ -255,7 +255,7 @@ def setup_baseline_agents(environments : dict[str, Game]):
 
             # Load Policies (centralized or decentralized)
             folder_name = os.path.join(RESULTS_DIR, exp.name.replace(" ", "_"))
-            if isinstance(new_agents, (CTDE_BI_MB_List, CTDE_CIBI_MB_List, CTDE_VDN_MF_List)):
+            if new_agents.centralized_planning:
                 shared_path = os.path.join(folder_name, f"G_{game_name}_shared_model.pkl")
                 new_agents.load(shared_path)
             else:

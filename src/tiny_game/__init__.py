@@ -16,7 +16,7 @@ from tiny_hanabi.game.assemblers import get_game, normalize_payoffs
 from .my_hanabi import MyHanabi
     
     
-def get_game_Rework(gamename: GameNames, normalize: bool = True):
+def get_game_Rework(gamename: GameNames, normalize: bool = False):
     if gamename.value == "G":
         game = MyHanabi(normalize=normalize)
     else:

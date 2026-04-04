@@ -88,7 +88,7 @@ class MyHanabi(Game):
                 count += 1.0
             # Alternative (only perfect reward allowed?)
             #else:
-            #    return 0.0
+            #    count -= 1.0
         return float(count/self.optimal_return) if self.normalize else count
 
     

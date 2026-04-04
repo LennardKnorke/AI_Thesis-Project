@@ -46,7 +46,7 @@ def hypersearch_algorithm(exp: Experiment,*args, **kwargs) -> None:
         # START - TRAIN PARAMS ON ALL GAMES
         for game_name in GAMES:
             # Set up Game Instance
-            ENV = get_game_Rework(GameNames(game_name), normalize=True)
+            ENV = get_game_Rework(GameNames(game_name))
 
             # Set up Agents
             AGENTS = exp.make_agents(ENV, params)

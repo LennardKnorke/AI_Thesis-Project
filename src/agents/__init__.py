@@ -1,30 +1,28 @@
 #/agents/__init__.py
 
 from .base_agent import (
-    AgentList, BaseAgent, 
+    AgentList, BaseAgent,
     ModelBasedAgent, ModelFreeAgent
 )
 
-from .model_free.dtde_iql import DTDE_QLearning_MF_Agent
-from .model_free.ctde_vdn import CTDE_VDN_MF_Agent, CTDE_VDN_MF_List
+from .model_free.iql import IQ_Learning_Agent
+from .model_free.vdn import VDN_Agent, VDN_CentralPlanner
 
-from .model_based.dtde_bi import DTDE_BI_MB_Agent
+from .model_based.pbvi import PBVI_Agent, PBVI_List
+from .model_based.dp import DP_Agent, DP_List
 
-from .model_based.ctde_bi import CTDE_BI_MB_Agent, CTDE_BI_MB_List
-from .model_based.ctde_cibi import CTDE_CIBI_MB_Agent, CTDE_CIBI_MB_List
-
-# TOM
-from .model_based.dtde_ToM import DTDE_ToMBI_Agent, ToM_WorldModel
+# ToM experimental agent
+from .model_based.ToM_pbvi import ToM_PBVI_Agent, ToM_WorldModel
 
 __all__ = [
     "AgentList", "BaseAgent",
     "ModelBasedAgent", "ModelFreeAgent",
-    
-    "DTDE_QLearning_MF_Agent",
-    "CTDE_VDN_MF_Agent", "CTDE_VDN_MF_List",
 
-    "DTDE_BI_MB_Agent",
-    "CTDE_BI_MB_Agent", "CTDE_BI_MB_List",
-    "CTDE_CIBI_MB_Agent", "CTDE_CIBI_MB_List",
-    "DTDE_ToMBI_Agent", "ToM_WorldModel"
+    "IQ_Learning_Agent",
+    "VDN_Agent", "VDN_CentralPlanner",
+
+    "PBVI_Agent", "PBVI_List",
+    "DP_Agent", "DP_List",
+
+    "ToM_PBVI_Agent", "ToM_WorldModel",
 ]

@@ -7,7 +7,7 @@ import torch
 from tqdm import tqdm
 
 # Project-specific imports
-from tiny_game import GAMES, GameNames, get_game_Rework, DecPOMDP, MyHanabi, Game
+from tiny_game import GAMES, GameNames, get_game_Rework, DecPOMDP, MyHanabi, Game, OPTIMAL_RETURNS
 from runner import run_training # Make sure this is the MODIFIED runner.py for player_id
 from runner import run_episode # Also ensure this is the MODIFIED one
 from agents import *
@@ -95,7 +95,7 @@ def train_test_tom():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Path Preliminaries
-    tom_results_dir = "DTDE ToMBI".replace(" ", "_")
+    tom_results_dir = "ToM_PBVI"
     tom_results_dir = os.path.join(RESULTS_DIR, tom_results_dir)
     os.makedirs(tom_results_dir, exist_ok=True)
     
@@ -108,7 +108,7 @@ def train_test_tom():
     baseline_agents_by_game = setup_baseline_agents(environments)
 
     ensembles : dict[str, np.ndarray] = load_ensembles()
-
+    special_ensembles : dict[str, dict[str, np.ndarray]] = load_specialized_ensembles()
     if not world_models_by_game or not baseline_agents_by_game or not ensembles:
         print("Missing Components. Exiting ToMBI training.")
         return
@@ -136,10 +136,11 @@ def train_test_tom():
         baseline_agents = baseline_agents_by_game[game_name]
         world_model, wm_config = world_models_by_game[game_name]
         ensemble = ensembles[game_name]
+        special_ensemble = special_ensembles[game_name]
         env = environments[game_name]
 
         # Set up ToM Agent
-        tom_agent_p0 = DTDE_ToMBI_Agent(
+        tom_agent_p0 = ToM_PBVI_Agent(
             env=env,
             num_cards = env.num_cards,
             ensemble=ensemble,
@@ -151,7 +152,7 @@ def train_test_tom():
             agent_id = 0
         )
         tqdm.write(f"{game_name} | Num. s0 : {len(env.start_states())} | Num. S {len(tom_agent_p0.all_joint_histories)} | Num priv h {len(tom_agent_p0.all_private_histories)}")
-        tom_agent_p1 = DTDE_ToMBI_Agent(
+        tom_agent_p1 = ToM_PBVI_Agent(
             env=env,
             num_cards = env.num_cards,
             ensemble=ensemble,
@@ -163,28 +164,29 @@ def train_test_tom():
             agent_id = 1
         )
         agent_list : AgentList = AgentList([tom_agent_p0, tom_agent_p1])
-
+        start_states = env.start_states()
         # Prep Training + testing
         p0_loss_results = []
         p1_loss_results = []
 
         reward_results = []
-        p0_reward_results = []
-        p1_reward_results = []
-        start_states = env.start_states()
+
+        spc_ens_p0_reward_results = []
+        spc_ens_p1_reward_results = []
+
+        mix_ens_p0_reward_results = []
+        mix_ens_p1_reward_results = []
 
         # Planning and Testing Step
         pbar_2 = tqdm(range(5), desc="Iterations", leave=False)
 
-        p0_reward = None
-        p1_reward = None
-        reward = None
+        self_play_reward, spc_ens_p0_reward, spc_ens_p1_reward, mix_ens_p0_reward, mix_ens_p1_reward = None, None, None, None, None
         for it in pbar_2:
             postfix_2 = {
                 "Iter" : it,
-                "Rew" : reward if reward else "None",
-                "Rew_p0" : p0_reward if p0_reward else "None",
-                "Rew_p1" : p1_reward if p1_reward else "None",
+                "Rew" : self_play_reward if self_play_reward else "None",
+                "Rew_p0" : spc_ens_p0_reward if spc_ens_p0_reward else "None",
+                "Rew_p1" : spc_ens_p1_reward if spc_ens_p1_reward else "None",
             }
             pbar_2.set_postfix(postfix_2)
 
@@ -194,32 +196,23 @@ def train_test_tom():
             p1_delta = tom_agent_p1.train()
             p1_loss_results.append(p1_delta)
 
-            # Testing
-            p0_reward = 0.0
-            p1_reward = 0.0
-            reward = 0.0
-
+            rewards = _evaluate_agents(env, 
+                                       tom_agent_p0, 
+                                       tom_agent_p1, 
+                                       agent_list,
+                                       start_states,
+                                       baseline_agents,
+                                       game_name,
+                                       ensemble,
+                                       special_ensemble)
             
-            for s0 in start_states:
-                ep = run_episode(env, agent_list, s0, True)
-                reward += ep[-1]
+            self_play_reward, spc_ens_p0_reward, spc_ens_p1_reward, mix_ens_p0_reward, mix_ens_p1_reward = rewards
+            reward_results.append(self_play_reward)
+            spc_ens_p0_reward_results.append(spc_ens_p0_reward)
+            spc_ens_p1_reward_results.append(spc_ens_p1_reward)
+            mix_ens_p0_reward_results.append(mix_ens_p0_reward)
+            mix_ens_p1_reward_results.append(mix_ens_p1_reward)
 
-                for base_agent_type in baseline_agents.keys():
-                    p0_agent_list = AgentList([tom_agent_p0, baseline_agents[base_agent_type][1]])
-                    p1_agent_list = AgentList([baseline_agents[base_agent_type][0], tom_agent_p1])
-
-                    p0_ep = run_episode(env, p0_agent_list, s0, True)
-                    p0_reward += p0_ep[-1]
-                    p1_ep = run_episode(env, p1_agent_list, s0, True)
-                    p1_reward += p1_ep[-1]
-
-            # Average reward
-            reward = reward / len(start_states)
-            p0_reward = p0_reward / (len(start_states) * len(baseline_agents.keys()))
-            p1_reward = p1_reward / (len(start_states) * len(baseline_agents.keys()))
-            reward_results.append(reward)
-            p0_reward_results.append(p0_reward)
-            p1_reward_results.append(p1_reward)
 
         # Save Game specific policies
         tom_agent_p0.save(os.path.join(tom_results_dir, f"G_{game_name}_agent_0.pkl"))
@@ -227,8 +220,11 @@ def train_test_tom():
 
         # Cache Results
         all_evaluation_results[f"reward_{game_name}"] = reward_results
-        all_evaluation_results[f"reward_{game_name}_0"] = p0_reward_results
-        all_evaluation_results[f"reward_{game_name}_1"] = p1_reward_results
+        all_evaluation_results[f"reward_{game_name}_0_mix"] = mix_ens_p0_reward_results
+        all_evaluation_results[f"reward_{game_name}_1_mix"] = mix_ens_p1_reward_results
+        all_evaluation_results[f"reward_{game_name}_0_spc"] = spc_ens_p0_reward_results
+        all_evaluation_results[f"reward_{game_name}_1_spc"] = spc_ens_p0_reward_results
+
         all_evaluation_results[f"loss_{game_name}_0"] = p0_loss_results
         all_evaluation_results[f"loss_{game_name}_1"] = p1_loss_results
 
@@ -241,15 +237,89 @@ def train_test_tom():
 
 
 def load_ensembles():
+    """Load the mixed (general) ensemble per game: G_{game}_ensemble.npy"""
     try:
         ensembles = {}
         for gname in GAMES:
             filepath = os.path.join(WORLD_MODELS_DIR, f"G_{gname}_ensemble.npy")
-            e = np.load(filepath)
-            ensembles[gname] = e
+            ensembles[gname] = np.load(filepath)
         return ensembles
     except:
         return None
+
+
+def load_specialized_ensembles() -> dict[str, dict[str, np.ndarray]]:
+    """
+    Load per-agent-type ensembles keyed by [game_name][agent_type_name].
+    Files: G_{game}_{agent_name.replace(' ','_')}_ensemble.npy
+    Missing files are silently omitted; callers fall back to the mixed ensemble.
+    """
+    specialized: dict[str, dict[str, np.ndarray]] = {}
+    for gname in GAMES:
+        specialized[gname] = {}
+        for exp in BASELINE_EXPERIMENTS:
+            safe_name = exp.name.replace(" ", "_")
+            fpath = os.path.join(WORLD_MODELS_DIR, f"G_{gname}_{safe_name}_ensemble.npy")
+            if os.path.exists(fpath):
+                specialized[gname][exp.name] = np.load(fpath)
+    return specialized
+
+
+def _evaluate_agents(
+    env: Game,
+    tom_agent_p0: ToM_PBVI_Agent,
+    tom_agent_p1: ToM_PBVI_Agent,
+    agent_list: AgentList,
+    start_states: list,
+    baseline_agents: dict,
+    game_name: str,
+    mixed_ensemble: np.ndarray,
+    specialized_ensembles: dict[str, np.ndarray] | None,
+) -> tuple[float, float, float]:
+    optimal = OPTIMAL_RETURNS[game_name]
+    n_starts = len(start_states)   
+
+    # Self play - Mixed ensemble
+    tom_agent_p0.set_ensemble(mixed_ensemble)
+    tom_agent_p1.set_ensemble(mixed_ensemble)
+    self_play_total = 0.0
+    for s0 in start_states:
+        episode = run_episode(env, agent_list, s0, True)
+        self_play_total += episode[-1]
+    self_play_total = self_play_total / n_starts / optimal
+
+
+    p0_spc_total = 0.0
+    p1_spc_total = 0.0
+    p0_mix_total = 0.0
+    p1_mix_total = 0.0
+
+    for base_type, base_agent_list in baseline_agents.items():
+        ens = specialized_ensembles[base_type]
+
+        for s0 in start_states:
+            # Run with mixed ensemble
+            tom_agent_p0.set_ensemble(mixed_ensemble)
+            tom_agent_p1.set_ensemble(mixed_ensemble)
+        
+            p0_mix_total += run_episode(env, AgentList([tom_agent_p0, base_agent_list[1]]), s0, True)[-1]
+            p1_mix_total += run_episode(env, AgentList([base_agent_list[0], tom_agent_p1]), s0, True)[-1]
+            
+            # Run with specialized ensemble
+            tom_agent_p0.set_ensemble(ens)
+            tom_agent_p1.set_ensemble(ens)
+
+            p0_spc_total += run_episode(env, AgentList([tom_agent_p0, base_agent_list[1]]), s0, True)[-1]
+            p1_spc_total += run_episode(env, AgentList([base_agent_list[0], tom_agent_p1]), s0, True)[-1]
+
+    # Restore mixed for the next planning sweep / cooperative eval
+    tom_agent_p0.set_ensemble(mixed_ensemble)
+    tom_agent_p1.set_ensemble(mixed_ensemble)
+
+    n_types = len(baseline_agents)
+    p0_spc_total = p0_spc_total / (n_starts * n_types) / optimal
+    p1_spc_total = p1_spc_total / (n_starts * n_types) / optimal
+    return self_play_total, p0_spc_total, p1_spc_total, p0_mix_total, p1_mix_total
     
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ def run_model_free_training(
         _ = run_episode(env, agents)
         
         loss = agents.train()
-        avg_test_reward = test_on_all_start_states(env, agents)
+        avg_test_reward = test_on_all_start_states(env, agents, game_name=kwargs.get('game_name'))
 
         loss_results.append(loss)
         reward_results.append(avg_test_reward)
@@ -50,7 +50,7 @@ def run_model_free_training(
                 "Rew": f"{avg_test_reward:.2f}"
             })
 
-        if auto_break and avg_test_reward >= OPTIMAL_RETURNS[kwargs.get('game_name')]:
+        if auto_break and avg_test_reward >= 1.0:
             break
 
     return np.array(reward_results), np.array(loss_results), agents
@@ -75,16 +75,15 @@ def run_model_based_planning(
     best_results = (np.array([]), np.array([]), deepcopy(agents))
 
     game_name = kwargs.get('game_name')
-    optimal_return = OPTIMAL_RETURNS.get(game_name, float('inf'))
 
     # --- ATTEMPTS LOOP ---
     for attempt in range(attempts):
         agents.reset()
-        
+
         # Buffers for THIS attempt
         current_loss_history = []
         current_reward_history = []
-        
+
         current_iteration = 0
         if max_iterations is None:
             max_iterations = -1
@@ -95,17 +94,17 @@ def run_model_based_planning(
         # --- PLANNING LOOP ---
         while not converged and (max_iterations == -1 or current_iteration < max_iterations):
             loss = agents.train()
-            avg_test_reward = test_on_all_start_states(env, agents)
+            avg_test_reward = test_on_all_start_states(env, agents, game_name=game_name)
 
             current_loss_history.append(loss)
             current_reward_history.append(avg_test_reward)
 
-            if avg_test_reward >= optimal_return:
+            if avg_test_reward >= 1.0:
                 is_optimal = True
                 converged = True
 
-            #if convergence_threshold is not None and loss < convergence_threshold:
-            #    converged = True
+            if loss == 0.0:
+                converged = True
 
             if "pbar" in kwargs and kwargs["pbar"] is not None:
                 kwargs["pbar"].set_postfix({
@@ -140,15 +139,18 @@ def run_model_based_planning(
     return best_results
 
 
-def test_on_all_start_states(env: Game, agents: AgentList) -> float:
+def test_on_all_start_states(env: Game, agents: AgentList, game_name: str = None) -> float:
     start_states = env.start_states()
     total_test_reward = 0.0
     for start_state in start_states:
         episode = run_episode(env, agents, start_state=start_state, test_episode=True)
-        total_history = episode[:-1]
         episode_reward = episode[-1]
         total_test_reward += episode_reward
-    return total_test_reward / len(start_states)
+    avg = total_test_reward / len(start_states)
+    optimal = OPTIMAL_RETURNS.get(game_name) if game_name is not None else None
+    if optimal is not None and optimal > 0:
+        avg = avg / optimal
+    return avg
 
 
 def run_episode(
@@ -195,7 +197,14 @@ def run_episode(
 
         # Build Next Observation for Training Storage
         next_observation = list(env.context())
-        if len(next_observation) <= 4:
+        if isinstance(env, MyHanabi):
+            if player_id == 0:
+                next_observation[0] = -1
+                next_observation[1] = -1
+            else:
+                next_observation[2] = -1
+                next_observation[3] = -1
+        else:
             next_observation[player_id] = -1
         next_observation = tuple(next_observation)
 

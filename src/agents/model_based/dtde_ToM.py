@@ -503,9 +503,18 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
                 else:
                     _, legal_partner = self.env.num_legal_actions(tuple(state_after_own_action))
 
+                # Renormalize predicted probabilities to the legal action subset
+                legal_partner_arr = np.array(legal_partner, dtype=np.int64)
+                legal_probs = np.atleast_1d(partner_probs[legal_partner_arr])
+                prob_sum = legal_probs.sum()
+                if prob_sum > 1e-8:
+                    legal_probs = legal_probs / prob_sum
+                else:
+                    legal_probs = np.ones(len(legal_partner), dtype=np.float32) / len(legal_partner)
+
                 world_value = 0.0
-                for partner_action in legal_partner:
-                    p_partner = partner_probs[partner_action]
+                for i, partner_action in enumerate(legal_partner):
+                    p_partner = float(legal_probs[i])
 
                     self.env.reset(state_after_own_action)
                     try:
@@ -556,6 +565,13 @@ class DTDE_ToMBI_Agent(ModelBasedAgent):
         self.policy.update(data["policy"])
         self.v_values.update(data["values"])
         return
+
+    def set_ensemble(self, ensemble: np.ndarray) -> None:
+        """Swap the past-episode context fed to CharacterNet."""
+        self.ensemble = ensemble
+        self.ensemble_tensor = torch.tensor(
+            ensemble, dtype=torch.float32, device=self.device
+        ).unsqueeze(0)
     
 
     def _mask_state(self, state):
