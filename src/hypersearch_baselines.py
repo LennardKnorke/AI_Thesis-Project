@@ -31,8 +31,18 @@ def hypersearch_algorithm(exp: Experiment,*args, **kwargs) -> None:
 
     # START - LOOP OVER PARAM SETS
     print(f"\nHyperparameter Search for {exp.name}")
-    pbar = tqdm(range(len(exp.param_list)))
     
+    if len(exp.param_list) == 1:
+        print("Only 1 Paramset exists. Saving params in json")
+        params = exp.param_list[0]
+        path = os.path.join(RESULTS_DIR, exp.name.replace(" ", "_"))
+        os.makedirs(path, exist_ok=True)
+        file = os.path.join(path, "best_params.json")
+        with open(file, 'w') as f:
+            json.dump(params, f, indent=4)
+        return
+    
+    pbar = tqdm(range(len(exp.param_list)))
     for idx in pbar:
         params : dict[str, Any] = exp.param_list[idx]
 
@@ -111,3 +121,8 @@ def results_do_exists(results_path: str, **params) -> bool:
         if key not in params or saved_params[key] != value:
             return False
     return True
+
+
+
+if __name__ == "__main__":
+    hypersearch_baselines()

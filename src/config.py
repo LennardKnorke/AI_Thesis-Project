@@ -6,13 +6,7 @@ import pandas as pd
 from typing import Any
 from tiny_game import GameNames, DecPOMDP
 
-from agents import (
-    BaseAgent, ModelBasedAgent, AgentList,
-    IQ_Learning_Agent,
-    VDN_Agent, VDN_CentralPlanner,
-    PBVI_Agent, PBVI_List,
-    DP_Agent, DP_List,
-)
+from agents import *
 
 # Episode Macros
 TRAINING_EPISODES_HYPERSEARCH = 1_000
@@ -105,22 +99,27 @@ vdn_grid = {
 }
 vdn_params = generate_param_grid(vdn_grid)
 
-# PBVI
-PBVI_params = [
-    {"max_iterations": 1, "attempts": 3},
-    {"max_iterations": 5, "attempts": 3},
-    {"max_iterations" : 10, "attempts" : 3},
-    {"max_iterations" : 50, "attempts" : 3}
+# JESP — iterative best response; max_iterations controls IBR rounds, attempts = random restarts
+jesp_params = generate_param_grid({
+    "max_iterations": [10, 50],
+    "attempts":       [3, 10],
+    "gamma":          [0.99],
+})
+
+# PBDP — one backward sweep per train() call; converges when max_delta == 0
+pbdp_params = [
+    {"max_iterations": 1, "attempts": 3}
 ]
 
-# MA-Belief-DP
-DP_params = [
-    {"max_iterations": 1, "attempts": 3},
-    {"max_iterations": 5, "attempts": 3},
-    {"max_iterations" : 10, "attempts" : 3},
-    {"max_iterations" : 50, "attempts" : 3}
-]
-
+# OSarsa — occupancy-state Sarsa; runs until policy stabilises or max_iterations reached
+osarsa_params = generate_param_grid({
+    "gamma":         [0.99],
+    "epsilon_start": [1.0],
+    "epsilon_min":   [0.05],
+    "epsilon_decay": [0.99],
+    "max_iterations": [200],
+    "attempts":       [1],
+})
 
 # Define Experiments List
 BASELINE_EXPERIMENTS = [
@@ -137,16 +136,22 @@ BASELINE_EXPERIMENTS = [
         list_class=VDN_CentralPlanner
     ),
     Experiment(
-        name="PBVI",
-        agent_class=PBVI_Agent,
-        param_list=PBVI_params,
-        list_class=PBVI_List
+        name="JESP",
+        agent_class=JESP_Agent,
+        param_list=jesp_params,
+        list_class=JESP_List
     ),
     Experiment(
-        name="MA Belief DP",
-        agent_class=DP_Agent,
-        param_list=DP_params,
-        list_class=DP_List
+        name="PBDP",
+        agent_class=PBDP_Agent,
+        param_list=pbdp_params,
+        list_class=PBDP_Central_Planner
+    ),
+    Experiment(
+        name="OSarsa",
+        agent_class=OSarsa_Agent,
+        param_list=osarsa_params,
+        list_class=OSarsa_Planner
     ),
 ]
 
@@ -180,16 +185,22 @@ def load_best_baselinesagents():
             list_class=VDN_CentralPlanner
         ),
         Experiment(
-            name="PBVI",
-            agent_class=PBVI_Agent,
-            param_list=load_best_params("PBVI"),
-            list_class=PBVI_List
+            name="JESP",
+            agent_class=JESP_Agent,
+            param_list=load_best_params("JESP"),
+            list_class=JESP_List
         ),
         Experiment(
-            name="MA Belief DP",
-            agent_class=DP_Agent,
-            param_list=load_best_params("MA Belief DP"),
-            list_class=DP_List
+            name="PBDP",
+            agent_class=PBDP_Agent,
+            param_list=load_best_params("PBDP"),
+            list_class=PBDP_Central_Planner
+        ),
+        Experiment(
+            name="OSarsa",
+            agent_class=OSarsa_Agent,
+            param_list=load_best_params("OSarsa"),
+            list_class=OSarsa_Planner
         ),
     ]
     return experiments

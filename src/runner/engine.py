@@ -32,7 +32,8 @@ def run_model_free_training(
     loss_results = []
     reward_results = []
 
-    for i in range(train_episodes):
+    pbar = tqdm(range(train_episodes), desc="MF - Playing Episodes", leave=False)
+    for i in pbar:
         env.reset()
         _ = run_episode(env, agents)
         
@@ -77,7 +78,8 @@ def run_model_based_planning(
     game_name = kwargs.get('game_name')
 
     # --- ATTEMPTS LOOP ---
-    for attempt in range(attempts):
+    pbar = tqdm(range(attempts), desc="MB - Attempts", leave=False)
+    for attempt in pbar:
         agents.reset()
 
         # Buffers for THIS attempt

@@ -2,11 +2,10 @@
 import os
 import json
 
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from tiny_game import GAMES, Settings, GameNames, DecPOMDP, MyHanabi, get_game_Rework
+from tiny_game import GAMES, GameNames, get_game_Rework
 from runner import run_training
 from agents import *
 from config import *
@@ -39,16 +38,22 @@ AGENT_REGISTRY = [
         list_class=VDN_CentralPlanner
     ),
     Experiment(
-        name="PBVI",
-        agent_class=PBVI_Agent,
-        param_list=load_best_params("PBVI"),
-        list_class=PBVI_List
+        name="JESP",
+        agent_class=JESP_Agent,
+        param_list=load_best_params("JESP"),
+        list_class=JESP_List
     ),
     Experiment(
-        name="MA Belief DP",
-        agent_class=DP_Agent,
-        param_list=load_best_params("MA Belief DP"),
-        list_class=DP_List
+        name="PBDP",
+        agent_class=PBDP_Agent,
+        param_list=load_best_params("PBDP"),
+        list_class=PBDP_Central_Planner
+    ),
+    Experiment(
+        name="OSarsa",
+        agent_class=OSarsa_Agent,
+        param_list=load_best_params("OSarsa"),
+        list_class=OSarsa_Planner
     ),
 ]
 
@@ -118,7 +123,7 @@ def train_test_baselines():
             )
 
             # 4. Save Final Model (Pickles)
-            save_dir = save_final_model(trained_agents, exp.name, game_name)
+            save_final_model(trained_agents, exp.name, game_name)
             
             # 5. Accumulate Results
             results_cache[f"reward_{game_name}"] = rewards
@@ -128,3 +133,8 @@ def train_test_baselines():
         results_df = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in results_cache.items()]))
         results_df.to_csv(final_csv_path, index=False)
     return
+
+
+
+if __name__ == "__main__":
+    train_test_baselines()

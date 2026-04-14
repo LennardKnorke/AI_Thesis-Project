@@ -32,7 +32,7 @@ TOM_PARAM_GRID = {
     "trunk_dim": [16, 32, 64,],
     "lr": [0.001, 0.01],
     "epochs": [250],
-    "batch_size" : [64]
+    "batch_size" : [32]
 }
 def generate_param_combinations(grid: dict) -> list[dict]:
     """Generates all permutations of hyperparameters."""
@@ -162,7 +162,7 @@ def train_worldmodel()->None:
 
         # Write summary for this parameter set
         is_better = (best_params is None) or is_better_results(best_results, current_loss_per_game)
-        _text =  f"New Best {params}!! | " if is_better else  f"Completed config {params} | "
+        _text =  f"New Best {params}!! | " if is_better else  f"Tested {params} | "
         tqdm.write(
             f"{_text}"
             f"Avg Val Loss: {avg_last_loss:.4f} | "
@@ -192,9 +192,9 @@ def train_worldmodel()->None:
             df.to_csv(os.path.join(WORLD_MODELS_DIR, "final_results.csv"), index=False)
 
             # Save Models
-            for game_name, state_dict in current_models_per_game.items():
-                save_path = os.path.join(WORLD_MODELS_DIR, f"WM_{game_name}.pth")
-                torch.save(state_dict, save_path)
+            #for game_name, state_dict in current_models_per_game.items():
+            #    save_path = os.path.join(WORLD_MODELS_DIR, f"WM_{game_name}.pth")
+            #    torch.save(state_dict, save_path)
 
         # Process Params tested
         processed_params.append(params)
@@ -309,8 +309,7 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
 
     # PAST CONTEXT
     start_states = env.start_states()
-    EPISODES_PER_TYPE = len(start_states)
-    PAST_EPISODES_CONTEXT = NUM_AGENT_TYPES * EPISODES_PER_TYPE
+    PAST_EPISODES_CONTEXT = NUM_AGENT_TYPES * len(start_states)
 
     # Mixed ensemble — one shared pool across all agent types (backup / testing)
     mixed_ensemble = _setup_ensemble(
@@ -323,12 +322,12 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
     for _type_name, _agents in baseline_agents.items():
         per_type_ensembles[_type_name] = _setup_ensemble(
             env, {_type_name: _agents},
-            EPISODES_PER_TYPE, MAX_SEQ_LEN, JOINT_OBS_DIM, game_name,
+            PAST_EPISODES_CONTEXT, MAX_SEQ_LEN, JOINT_OBS_DIM, game_name,
             type_name=_type_name
         )
 
     # Dataset
-    DATASET_EPISODES = 15
+    DATASET_EPISODES = 5
     train_storage = []
     val_storage = []
 
@@ -411,8 +410,8 @@ def _setup_ensemble(env: Game, baseline_agent: dict[AgentList], past_episodes_co
 
     # Per-agent-type ensemble OR mixed ensemble (type_name=None)
     if type_name is not None:
-        safe_name = type_name.replace(" ", "_")
-        ensemble_path = os.path.join(WORLD_MODELS_DIR, f"G_{game_name}_{safe_name}_ensemble.npy")
+        path_name = type_name.replace(" ", "_")
+        ensemble_path = os.path.join(WORLD_MODELS_DIR, f"G_{game_name}_{path_name}_ensemble.npy")
     else:
         ensemble_path = os.path.join(WORLD_MODELS_DIR, f"G_{game_name}_ensemble.npy")
 
