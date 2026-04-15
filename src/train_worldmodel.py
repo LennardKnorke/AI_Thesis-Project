@@ -15,13 +15,12 @@ from tqdm import tqdm
 
 from tiny_game import GAMES, Settings, GameNames, get_game_Rework, MyHanabi, DecPOMDP, Game
 from agents import ToM_WorldModel
-from agents.model_based.ToM_pbvi import _encode_observation, _encode_action, _encode_joint_observation
+from agents.model_based.ToM_pbvi import _encode_observation, _encode_joint_observation
 from runner import run_episode
 from config import * 
 from train_test_baselines import load_best_baselinesagents
 
 # --- CONSTANTS ---
-TRAIN_SIZE_RATIO = 0.8
 TOM_PARAM_LOG_FILE = "tested_params.json"
 TOM_PARAM_LOG_FILE = os.path.join(WORLD_MODELS_DIR, TOM_PARAM_LOG_FILE)
 
@@ -57,7 +56,7 @@ class ToMDataset(torch.utils.data.Dataset):
             x_past_traj,  # (N, N_PAST, SEQ, OBS_DIM)
             x_history,    # (N, SEQ, FEAT)
             x_obs,        # (N, OBS_DIM) -> Own Next Obs
-            x_act,        # (N, ACT_DIM) -> Own Action (One-Hot)
+            #x_act,        # (N, ACT_DIM) -> Own Action (One-Hot)
             tgt_obs,      # (N, OBS_DIM) -> Partner Next Obs
             tgt_act,      # (N,)         -> Partner Action (Indices)
             tgt_type      # (N,)         -> Agent Identity (Indices)
@@ -65,7 +64,7 @@ class ToMDataset(torch.utils.data.Dataset):
         self.x_past_traj = x_past_traj
         self.x_history = x_history
         self.x_obs = x_obs
-        self.x_act = x_act
+        #self.x_act = x_act
         self.y_obs = tgt_obs
         self.y_act = tgt_act
         self.y_type = tgt_type 
@@ -77,7 +76,7 @@ class ToMDataset(torch.utils.data.Dataset):
         past = torch.tensor(self.x_past_traj[idx], dtype=torch.float32)
         history = torch.tensor(self.x_history[idx], dtype=torch.float32)
         obs = torch.tensor(self.x_obs[idx], dtype=torch.float32)
-        act = torch.tensor(self.x_act[idx], dtype=torch.float32)
+        #act = torch.tensor(self.x_act[idx], dtype=torch.float32)
         tgt_obs = torch.tensor(self.y_obs[idx], dtype=torch.float32)
         tgt_act = torch.tensor(self.y_act[idx], dtype=torch.long)
         tgt_type = torch.tensor(self.y_type[idx], dtype=torch.long)
@@ -86,7 +85,7 @@ class ToMDataset(torch.utils.data.Dataset):
             "past": past,
             "history": history,
             "obs": obs,
-            "act": act,
+            #"act": act,
             # Targets
             "tgt_obs": tgt_obs,
             "tgt_act": tgt_act,
@@ -96,8 +95,7 @@ class ToMDataset(torch.utils.data.Dataset):
 
 Dataframe = dict[str, Dataset|DataLoader|int]
 dataframe_template : Dataframe = {
-    "train" : ToMDataset,
-    "val" : ToMDataset,
+    "data" : ToMDataset,   # full dataset — no train/val split (deterministic policies)
     # Dimensions
     "obs_dim" : int,
     "action_dim" : int,
@@ -132,43 +130,45 @@ def train_worldmodel()->None:
         if are_params_processed(processed_params, params):
             continue
 
-        # Results Cachce
+        # Results cache
         current_loss_per_game = {}
-        current_obs_action_acc_per_game = {}
-        current_obs_card_acc_per_game = {}
+        #current_obs_action_acc_per_game = {}
+        #current_obs_card_acc_per_game = {}
         current_act_acc_per_game = {}
+        current_type_acc_per_game = {}
         current_models_per_game = {}
 
         # Train for every game with these params
         pbar2 = tqdm(full_dataset.items(), desc="Iterate over Games", leave=False)
         for game_name, dataset in pbar2:
-            #pbar2.set_postfix()
-
             env = environments[game_name]
 
-            val_loss_list, obs_act_acc_list, obs_card_acc_list, act_acc_list, state_dict = train_evaluate_world_model(params, dataset, NUM_AGENT_TYPES, env)
-            
+            val_loss_list, obs_act_acc_list, obs_card_acc_list, act_acc_list, type_acc_list, state_dict = train_evaluate_world_model(params, dataset, NUM_AGENT_TYPES, env)
+
             current_loss_per_game[game_name] = val_loss_list
-            current_obs_action_acc_per_game[game_name] = obs_act_acc_list
-            current_obs_card_acc_per_game[game_name] = obs_card_acc_list
+            #current_obs_action_acc_per_game[game_name] = obs_act_acc_list
+            #current_obs_card_acc_per_game[game_name] = obs_card_acc_list
             current_act_acc_per_game[game_name] = act_acc_list
+            current_type_acc_per_game[game_name] = type_acc_list
             current_models_per_game[game_name] = state_dict
 
         # Compute averages across games
-        avg_last_loss = np.mean([l[-1] for l in current_loss_per_game.values()])
-        avg_last_obs_action_acc = np.mean(list(current_obs_action_acc_per_game.values()))
-        avg_last_obs_card_acc = np.mean(list(current_obs_card_acc_per_game.values()))
-        avg_last_act_acc = np.mean(list(current_act_acc_per_game.values()))
+        avg_last_loss          = np.mean([l[-1] for l in current_loss_per_game.values()])
+        #avg_last_obs_action_acc = np.mean([v[-1] for v in current_obs_action_acc_per_game.values()])
+        #avg_last_obs_card_acc  = np.mean([v[-1] for v in current_obs_card_acc_per_game.values()])
+        avg_last_act_acc       = np.mean([v[-1] for v in current_act_acc_per_game.values()])
+        avg_last_type_acc      = np.mean([v[-1] for v in current_type_acc_per_game.values()])
 
         # Write summary for this parameter set
         is_better = (best_params is None) or is_better_results(best_results, current_loss_per_game)
-        _text =  f"New Best {params}!! | " if is_better else  f"Tested {params} | "
+        _text = f"New Best {params}!! | " if is_better else f"Tested {params} | "
         tqdm.write(
             f"{_text}"
             f"Avg Val Loss: {avg_last_loss:.4f} | "
-            f"Obs Action Acc: {avg_last_obs_action_acc:.4f} | "
-            f"Obs Card Acc: {avg_last_obs_card_acc:.4f} | "
-            f"Action Pred Acc: {avg_last_act_acc:.4f}"
+            #f"Obs Action Acc: {avg_last_obs_action_acc:.4f} | "
+            #f"Obs Card Acc: {avg_last_obs_card_acc:.4f} | "
+            f"Action Pred Acc: {avg_last_act_acc:.4f} | "
+            f"Type ID Acc: {avg_last_type_acc:.4f}"
         )
 
         # Identify model improvement
@@ -182,10 +182,11 @@ def train_worldmodel()->None:
             # Save Results CSV
             results_data = {}
             for game_name in current_loss_per_game.keys():
-                results_data[f"loss_{game_name}"] = current_loss_per_game[game_name]
-                results_data[f"obs_card_acc_{game_name}"] = current_obs_card_acc_per_game[game_name]
-                results_data[f"obs_act_acc_{game_name}"] = current_obs_action_acc_per_game[game_name]
-                results_data[f"act_acc_{game_name}"] = current_act_acc_per_game[game_name]
+                results_data[f"loss_{game_name}"]        = current_loss_per_game[game_name]
+                #results_data[f"obs_card_acc_{game_name}"] = current_obs_card_acc_per_game[game_name]
+                #results_data[f"obs_act_acc_{game_name}"] = current_obs_action_acc_per_game[game_name]
+                results_data[f"act_acc_{game_name}"]     = current_act_acc_per_game[game_name]
+                results_data[f"type_acc_{game_name}"]    = current_type_acc_per_game[game_name]
             best_results = results_data
             
             df = pd.DataFrame(best_results)
@@ -212,12 +213,13 @@ def train_worldmodel()->None:
         #pbar2.set_postfix()
         env = environments[game_name]
 
-        val_loss_list, obs_act_acc_list, obs_card_acc_list, act_acc_list, state_dict = train_evaluate_world_model(best_params, dataset, NUM_AGENT_TYPES, env)
-        
-        results_data[f"loss_{game_name}"] = val_loss_list
-        results_data[f"obs_act_acc_{game_name}"] = obs_act_acc_list
-        results_data[f"obs_card_acc_{game_name}"] = obs_card_acc_list
-        results_data[f"act_acc_{game_name}"] = act_acc_list
+        val_loss_list, obs_act_acc_list, obs_card_acc_list, act_acc_list, type_acc_list, state_dict = train_evaluate_world_model(best_params, dataset, NUM_AGENT_TYPES, env)
+
+        results_data[f"loss_{game_name}"]         = val_loss_list
+        #results_data[f"obs_act_acc_{game_name}"]  = obs_act_acc_list
+        #results_data[f"obs_card_acc_{game_name}"] = obs_card_acc_list
+        results_data[f"act_acc_{game_name}"]      = act_acc_list
+        results_data[f"type_acc_{game_name}"]     = type_acc_list
         current_models_per_game[game_name] = state_dict
     
     df = pd.DataFrame(results_data)
@@ -290,7 +292,7 @@ def setup_dataset(baseline_agents_per_game : dict[str, dict[str, AgentList]], en
 def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], game_name : str, *args, **kwargs) -> Dataframe:
     # Action Dimension
     ACT_DIM = env.num_actions + 1   # Num of possible actions + Null action
-    null_action = env.num_actions
+    # null_action = env.num_actions  # only used in _encode_action which is commented out
     # ENV SPECIFIC SPECS
     if isinstance(env, DecPOMDP):
         start_len = 2
@@ -326,83 +328,68 @@ def collect_game_datasets(env : Game, baseline_agents : dict[str, AgentList], ga
             type_name=_type_name
         )
 
-    # Dataset
-    DATASET_EPISODES = 5
-    train_storage = []
-    val_storage = []
+    # Dataset — one pass only.
+    # Baseline policies are deterministic, so repeating episodes yields identical trajectories.
+    # The full dataset is num_agent_types × num_start_states × steps_per_episode unique points.
+    # We run each (agent_type, start_state) pair exactly once and train on the full dataset.
+    storage = []
 
-    # Indexing tool
-    p0_card_cutoff_idx = start_len // 2
-    
-    # Loop over each agent partner duo
+    # Alternating-turn datapoint collection.
+    # The game is strictly 2-player alternating: P0 acts at next_idx=1,3,5,...
+    # and P1 acts at next_idx=2,4,6,...  At every step exactly one player takes
+    # a real action while the other takes the null action.
+    #
+    # We collect from BOTH perspectives in a single pass:
+    #   next_idx odd  → P0 acts; from P1's view P1 holds null, P1 predicts P0.
+    #   next_idx even → P1 acts; from P0's view P0 holds null, P0 predicts P1.
+    #
+    # Every transition is a valid partner-prediction datapoint from exactly one
+    # perspective, so no step is skipped and no step is double-counted.
     pbar2 = tqdm(enumerate(baseline_agents.keys()), leave=False)
     for type_idx, type_name in pbar2:
         agents_list = baseline_agents[type_name]
 
-        # Datapoints storage per agent type
-        memory_bank_train = []
-        memory_bank_val = []
+        for s0 in start_states:
+            full_episode_log = run_episode(env, agents_list, list(s0), True)
+            full_history = full_episode_log[:-1]
 
-        pbar3 = tqdm(range(DATASET_EPISODES), leave=False)
-        for ep in pbar3:
-            for s0 in start_states:
-                # Play an episode
-                full_episode_log = run_episode(env, agents_list, list(s0), True)
-                full_history = full_episode_log[:-1]
-                
-                # Split into cards and actions
-                cards = full_history[:start_len]
-                actions = full_history[start_len:]
-                full_history = [cards] + actions
+            cards = full_history[:start_len]
+            actions = full_history[start_len:]
+            full_history = [cards] + actions
 
-                #
-                h_enc = np.zeros((MAX_SEQ_LEN, JOINT_OBS_DIM), dtype=np.float32)
-                # Loop Over Timesteps to create inputs and outputs for each step
-                for i, joint_obs in enumerate(full_history):
-                    # t+1 index.
-                    next_idx = i + 1
-                    if next_idx >= len(full_history):
-                        break
-                    next_obs = full_history[next_idx]
-                    
-                    # Encode step t joint history: (h^i, h^k)_t = h_t
-                    z_enc = _encode_joint_observation(joint_obs, JOINT_OBS_DIM, env)
-                    h_enc[i] = z_enc
+            h_enc = np.zeros((MAX_SEQ_LEN, JOINT_OBS_DIM), dtype=np.float32)
+            for i, joint_obs in enumerate(full_history):
+                next_idx = i + 1
+                if next_idx >= len(full_history):
+                    break
+                next_obs = full_history[next_idx]
 
-                    # Encode own action (always null), a_t
-                    priv_a_enc = _encode_action(null_action, ACT_DIM)
+                z_enc = _encode_joint_observation(joint_obs, JOINT_OBS_DIM, env)
+                h_enc[i] = z_enc
 
-                    # Encode own next obs z_{t+1}
-                    priv_z_enc = _encode_observation(next_obs, OBS_DIM, env)
+                # Encode own action (always null), a_t
+                #priv_a_enc = _encode_action(null_action, ACT_DIM)
 
-                    # Encode partner next obs z_{t+1}. In this game z^k_{t+1}==z^i_{t+1}
-                    partner_z_enc = _encode_observation(next_obs, OBS_DIM, env)
+                # Encode own next obs z_{t+1} (equals partner obs — z^i == z^{-i})
+                priv_z_enc = _encode_observation(next_obs, OBS_DIM, env)
 
-                    # Encode partner action, a^k_t
-                    partner_a_enc = next_obs[0] if isinstance(next_obs, (tuple, list)) else next_obs
+                # tgt_obs REMOVED — obs head disabled (z^i == z^{-i}, trivial identity)
+                # partner_z_enc = _encode_observation(next_obs, OBS_DIM, env)
 
-                    
-                    datapoint = {
-                        "obs" : priv_z_enc,
-                        "act" : priv_a_enc,
-                        "tgt_act": partner_a_enc,
-                        "tgt_obs": partner_z_enc,
-                        "tgt_type": type_idx,
-                        # CRITICAL: Copy the current state of past episodes buffer
-                        "past_episodes": per_type_ensembles[type_name].copy(),
-                        "current_history": h_enc.copy()
-                    }
-                  
-                    # 5. Append relevant perspective to dataset
-                    if ep < (DATASET_EPISODES * TRAIN_SIZE_RATIO):
-                        memory_bank_train.append(datapoint)
-                    else:
-                        memory_bank_val.append(datapoint)
+                # Encode partner action a^{-i}_{t+1}
+                partner_a_enc = next_obs[0] if isinstance(next_obs, (tuple, list)) else next_obs
 
-        # Update total database with experiences of the current agent
-        train_storage.extend(memory_bank_train)
-        val_storage.extend(memory_bank_val)
-    return convert_game_dataset(train_storage, val_storage, OBS_DIM, JOINT_OBS_DIM, ACT_DIM, MAX_SEQ_LEN), mixed_ensemble
+                storage.append({
+                    "obs":             priv_z_enc,
+                    #"act":            priv_a_enc,
+                    "tgt_act":         partner_a_enc,
+                    "tgt_obs":         priv_z_enc,   # API compat only; not used in loss
+                    "tgt_type":        type_idx,
+                    "past_episodes":   per_type_ensembles[type_name].copy(),
+                    "current_history": h_enc.copy()
+                })
+
+    return convert_game_dataset(storage, OBS_DIM, JOINT_OBS_DIM, ACT_DIM, MAX_SEQ_LEN), mixed_ensemble
 
 
 def _setup_ensemble(env: Game, baseline_agent: dict[AgentList], past_episodes_context, max_seq_len, obs_dim, game_name, type_name: str | None = None):
@@ -451,22 +438,17 @@ def _setup_ensemble(env: Game, baseline_agent: dict[AgentList], past_episodes_co
     return vec
 
 
-def convert_game_dataset(train_data, val_data, obs_dim, joint_obs_dim, act_dim, seq_len):
-    def _unpack_data(data_list):            
-        return ToMDataset(
-            x_past_traj=[d['past_episodes'] for d in data_list],
-            x_history=[d['current_history'] for d in data_list],
-            x_obs=[d['obs'] for d in data_list],
-            x_act=[d['act'] for d in data_list],
-            tgt_obs=[d['tgt_obs'] for d in data_list],
-            tgt_act=[d['tgt_act'] for d in data_list],
-            tgt_type=[d['tgt_type'] for d in data_list]
-        )
+def convert_game_dataset(data, obs_dim, joint_obs_dim, act_dim, seq_len):
     df : Dataframe = dataframe_template.copy()
-    
-    df["train"] = _unpack_data(train_data)
-    df["val"] = _unpack_data(val_data)
-
+    df["data"] = ToMDataset(
+        x_past_traj=[d['past_episodes'] for d in data],
+        x_history=[d['current_history'] for d in data],
+        x_obs=[d['obs'] for d in data],
+        #x_act=[d['act'] for d in data],
+        tgt_obs=[d['tgt_obs'] for d in data],
+        tgt_act=[d['tgt_act'] for d in data],
+        tgt_type=[d['tgt_type'] for d in data]
+    )
     df["joint_obs_dim"] = joint_obs_dim
     df["obs_dim"] = obs_dim
     df["act_dim"] = act_dim
@@ -496,14 +478,15 @@ def load_tmp_best_results():
 
 
 # --- TRAINING FUNCTION --- 
-def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents : int, env : Game) -> tuple[list[float], list[float], list[float], dict]:
+def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents : int, env : Game = None) -> tuple[list[float], list[float], list[float], dict]:
     """
-    Trains one model on one game for X epochs. Returns Validation Loss and State Dict.
+    Trains one model on one game for X epochs using full-batch gradient descent.
+    env retained in signature for API compatibility (all game-specific branches removed with obs head).
     """
-    action_part_dim = env.num_actions + 1  
-
-    if isinstance(env, MyHanabi):
-        card_part_dim = env.num_cards * 4
+    # action_part_dim and card_part_dim were used for obs accuracy — removed with obs head
+    # action_part_dim = env.num_actions + 1
+    # if isinstance(env, MyHanabi):
+    #     card_part_dim = env.num_cards * 4
 
     # 1. Setup Model
     model = ToM_WorldModel(
@@ -517,125 +500,59 @@ def train_evaluate_world_model(params: dict, dataset_info: Dataframe, num_agents
         trunk_dim=params['trunk_dim']
     )
     
-    train_loader = DataLoader(dataset_info["train"], batch_size=params['batch_size'], shuffle=True, drop_last=False)
-    val_loader = DataLoader(dataset_info["val"], batch_size=params['batch_size'], shuffle=False)
-    
-    optimizer = optim.Adam(model.parameters(), lr=params['lr'])
-    ce_loss = nn.CrossEntropyLoss()
-    bce_loss = nn.BCEWithLogitsLoss()
+    # Full-batch: load the entire (small, deterministic) dataset as one tensor batch.
+    # Baseline policies are deterministic → no new information from repeated sampling.
+    full_dataset = dataset_info["data"]
+    full_loader  = DataLoader(full_dataset, batch_size=len(full_dataset), shuffle=False)
+    full_batch   = next(iter(full_loader))   # pre-load once; data never changes
+    past     = full_batch['past']
+    hist     = full_batch['history']
+    obs      = full_batch['obs']
+    tgt_act  = full_batch['tgt_act']
+    tgt_type = full_batch['tgt_type']
 
+    optimizer = optim.Adam(model.parameters(), lr=params['lr'])
+    ce_loss   = nn.CrossEntropyLoss()
+    # bce_loss = nn.BCEWithLogitsLoss()  # REMOVED — obs head disabled
 
     epoch_train_losses = []
-    epoch_obs_action_acc = []
-    epoch_obs_card_acc = []
+    # epoch_obs_action_acc = []  # REMOVED — obs head disabled
+    # epoch_obs_card_acc = []    # REMOVED — obs head disabled
     epoch_action_acc = []
-    
-    # 2. Training Loop
-    pbar = tqdm(range(params['epochs']), leave= False)
-    for epoch in pbar:
-        # Training Step
+    epoch_type_acc   = []
+
+    # 2. Training Loop — one full-batch gradient step per epoch
+    pbar = tqdm(range(params['epochs']), leave=False)
+    for _ in pbar:
         model.train()
-        train_loss_sum = 0.0
-        train_batches = 0
+        optimizer.zero_grad()
 
-        for batch in train_loader:
-            past = batch['past']
-            hist = batch['history']
-            obs = batch['obs']
-            act = batch['act']
-            tgt_act = batch['tgt_act']
-            tgt_obs = batch['tgt_obs']
-            tgt_type = batch['tgt_type']
+        act_logits, _, id_logits = model(past, hist, obs)
 
-            optimizer.zero_grad()
-            
-            act_logits, obs_pred, id_logits = model(past, hist, obs, act)
+        # Loss: action prediction + identity regularisation
+        # loss_obs removed — obs head disabled (z^i == z^{-i})
+        loss_act = ce_loss(act_logits, tgt_act)
+        loss_id  = ce_loss(id_logits,  tgt_type)
+        loss     = loss_act + (0.2 * loss_id)
+        loss.backward()
+        optimizer.step()
 
-            # Loss
-            loss_obs = bce_loss(obs_pred, tgt_obs)      # Obs Prediction (complex)
-            loss_act = ce_loss(act_logits, tgt_act)     # Action Prediction (onehot)
-            loss_id  = ce_loss(id_logits, tgt_type)
-            loss = loss_act + loss_obs + (0.2 * loss_id)
-            loss.backward()
+        # Accuracy from the same logits (full batch, no separate eval pass needed)
+        act_acc  = (act_logits.detach().argmax(dim=1) == tgt_act).float().mean().item()
+        type_acc = (id_logits.detach().argmax(dim=1)  == tgt_type).float().mean().item()
 
-            optimizer.step()
+        epoch_train_losses.append(loss.item())
+        epoch_action_acc.append(act_acc)
+        epoch_type_acc.append(type_acc)
 
-            train_loss_sum += loss.item()
-            train_batches += 1
-
-        avg_train_loss = train_loss_sum / train_batches
-        epoch_train_losses.append(avg_train_loss) 
-
-        # Final Validation
-        model.eval()
-        correct_obs_action = 0
-        correct_obs_cards = 0
-        correct_act = 0
-        total = 0
-
-        with torch.no_grad():
-            for batch in val_loader:
-                past = batch['past']
-                hist = batch['history']
-                obs = batch['obs']
-                act = batch['act']
-
-                tgt_act = batch['tgt_act']
-                tgt_obs = batch['tgt_obs']
-
-                act_logits, obs_pred, _ = model(past, hist, obs, act)
-
-                if isinstance(env, DecPOMDP):
-                    pred_obs = obs_pred.argmax(dim=1)
-                    true_obs = tgt_obs.argmax(dim=1)
-                    correct_obs = (pred_obs == true_obs).sum().item()
-                    # For consistency with return values, set both action and card acc to same
-                    correct_obs_action += correct_obs
-                    correct_obs_cards += correct_obs   
-
-                elif isinstance(env, MyHanabi):
-                    # Split into action part and card part
-                    obs_pred_action = obs_pred[:, :action_part_dim]
-                    obs_pred_cards = obs_pred[:, action_part_dim:]
-
-                    # Convert target one-hot to class indices
-                    tgt_obs_action = tgt_obs[:, :action_part_dim].argmax(dim=1)
-                    tgt_obs_cards = tgt_obs[:, action_part_dim:].argmax(dim=1)
-
-                    # Calculate accuracies
-                    pred_obs_action = obs_pred_action.argmax(dim=1)
-                    pred_obs_cards = obs_pred_cards.argmax(dim=1)
-
-                    correct_obs_action += (pred_obs_action == tgt_obs_action).sum().item()
-                    correct_obs_cards += (pred_obs_cards == tgt_obs_cards).sum().item()
-
-                pred_act = act_logits.argmax(dim=1)
-                correct_act += (pred_act == tgt_act).sum().item()
-                total += tgt_act.size(0)
-
-        # Calculate validation metrics
-        avg_obs_action_acc = correct_obs_action / total if total > 0 else 0.0
-        avg_obs_cards_acc = correct_obs_cards / total if total > 0 else 0.0
-        avg_act_acc = correct_act / total if total > 0 else 0.0
-
-        #epoch_val_losses.append(avg_val_loss)
-        epoch_obs_action_acc.append(avg_obs_action_acc)
-        epoch_obs_card_acc.append(avg_obs_cards_acc)
-        epoch_action_acc.append(avg_act_acc)
-
-        postfix_dict = {
-            'loss': f'{avg_train_loss:.4f}',
-            'act_acc': f'{avg_act_acc:.4f}'
-        }
-        if isinstance(env, MyHanabi):
-            postfix_dict['obsA_acc'] = f'{avg_obs_action_acc:.4f}'
-            postfix_dict['obsC_acc'] = f'{avg_obs_cards_acc:.4f}'
-        else:  # DecPOMDP
-            postfix_dict['obs_acc'] = f'{avg_obs_action_acc:.4f}'
-            
-        pbar.set_postfix(postfix_dict)
+        pbar.set_postfix({
+            'loss':     f'{loss.item():.4f}',
+            'act_acc':  f'{act_acc:.4f}',
+            'type_acc': f'{type_acc:.4f}',
+        })
     # Finalize Training
-    return epoch_train_losses, epoch_obs_action_acc, epoch_obs_card_acc, epoch_action_acc, model.state_dict()
+    # obs_act and obs_card lists returned as [0.0] sentinels (obs head removed)
+    return epoch_train_losses, [0.0], [0.0], epoch_action_acc, epoch_type_acc, model.state_dict()
 
 
 def is_better_results(best_results: None|dict[str, list[float]], new_loss_dict: dict[str, list[float]]) -> bool:

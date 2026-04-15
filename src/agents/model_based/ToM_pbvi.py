@@ -14,6 +14,15 @@ from ..base_agent import ModelBasedAgent
 
 
 
+def _encode_action(action : int, action_dim : int):
+    """
+    NOT NEEDED. Own Action is always Null-action. Left for documentation purposes.
+    """
+    vec = np.zeros(action_dim, dtype=np.float32)
+    vec[action] = 1.0
+    return vec
+
+
 def _encode_decPOMDP_jh(obs : int|tuple[int, int], obs_dim : int, env : Game):
     vec = np.zeros(obs_dim, dtype=np.float32)
     num_actions = env.num_actions
@@ -114,11 +123,6 @@ def _encode_observation(obs : int|tuple[int, int], obs_dim : int, env : Game):
         raise ValueError("Faulty Environment")
 
 
-def _encode_action(action : int, action_dim : int):
-    vec = np.zeros(action_dim, dtype=np.float32)
-    vec[action] = 1.0
-    return vec
-
 
 class CharacterNet(nn.Module):
     """
@@ -201,7 +205,12 @@ class ToM_WorldModel(nn.Module):
                  mental_embed_dim : int = 16,
                  trunk_dim : int = 64,
                  *args, **kwargs):
-        super().__init__()       
+        super().__init__()
+        # Null action buffer: always zeros, expands to (batch, action_dim) in forward().
+        # Registered so it follows the model to whatever device it lives on.
+        self.register_buffer('null_action', torch.zeros(1, action_dim))
+        self.obs_dim = obs_dim  # kept for API compatibility / obs_trunk rollback
+
         # 1. Sub-Nets
         self.char_net = CharacterNet(joint_obs_dim, char_embed_dim, num_agent_types)
         self.mental_net = MentalNet(joint_obs_dim, char_embed_dim, mental_embed_dim)
@@ -216,24 +225,28 @@ class ToM_WorldModel(nn.Module):
             nn.ReLU()
         )
 
-        # 2b. Observation trunk: psi^1_i = Pr(z^{-i}_{t+1} | h^i_t, h^{-i}_t, z^i_{t+1}, a^i_t)
-        #     Includes z^i_{t+1} (current_obs) as conditioning information
-        self.obs_trunk_input_dim = char_embed_dim + mental_embed_dim + obs_dim + action_dim
-        self.obs_trunk = nn.Sequential(
-            nn.Linear(self.obs_trunk_input_dim, trunk_dim),
-            nn.ReLU(),
-            nn.Linear(trunk_dim, trunk_dim),
-            nn.ReLU()
-        )
+        # 2b. Observation trunk — REMOVED.
+        #     In both TinyHanabi (DecPOMDP) and MyHanabi, observations are fully joint:
+        #     z^i_{t+1} == z^{-i}_{t+1} for all t > 0 (both players see the same event).
+        #     Predicting z^{-i} from z^i is therefore a trivial identity mapping that
+        #     carries no useful signal. Kept here for documentation and rollback if future
+        #     game variants introduce asymmetric observations.
+        # self.obs_trunk_input_dim = char_embed_dim + mental_embed_dim + obs_dim + action_dim
+        # self.obs_trunk = nn.Sequential(
+        #     nn.Linear(self.obs_trunk_input_dim, trunk_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(trunk_dim, trunk_dim),
+        #     nn.ReLU()
+        # )
 
         # 3. Heads
         # Head A: Action Prediction -> P(a^{-i}_t)
         self.action_head = nn.Linear(trunk_dim, action_dim)
 
-        # Head B: Observation Prediction -> P(z^{-i}_{t+1})
-        self.observation_head = nn.Linear(trunk_dim, obs_dim)
+        # Head B: Observation Prediction -> P(z^{-i}_{t+1})  — REMOVED (see obs_trunk above)
+        # self.observation_head = nn.Linear(trunk_dim, obs_dim)
 
-    def forward(self, past_episodes, current_history, current_obs, own_action):
+    def forward(self, past_episodes, current_history, current_obs):
         """
         Args:
             past_episodes: (Batch, N_Eps, Seq, Feat)
@@ -251,12 +264,14 @@ class ToM_WorldModel(nn.Module):
         action_features = self.action_trunk(x_action)
         action_logits = self.action_head(action_features)
 
-        # Observation prediction: psi^1_i — conditioned on z^i_{t+1}
-        x_obs = torch.cat([e_char, e_mental, current_obs, own_action], dim=1)
-        obs_features = self.obs_trunk(x_obs)
-        next_obs_pred = self.observation_head(obs_features)
+        # Observation prediction — REMOVED (obs_trunk disabled, z^i == z^{-i} in current games).
+        # Rollback reference:
+        # act = self.null_action.expand(current_obs.shape[0], -1)
+        # x_obs = torch.cat([e_char, e_mental, current_obs, act], dim=1)
+        # obs_features = self.obs_trunk(x_obs)
+        # next_obs_pred = self.observation_head(obs_features)
 
-        return action_logits, next_obs_pred, identity_logits
+        return action_logits, None, identity_logits  # obs_pred=None (head removed)
 
 
 PAST_EPISODES_CONTEXT = 5
@@ -273,6 +288,7 @@ class ToM_PBVI_Agent(ModelBasedAgent):
         world_model: ToM_WorldModel,
         world_model_config: dict[str, Any],
         ensemble: np.ndarray,
+        spec_ensembles: dict[str, np.ndarray] | None = None,
         agent_id: int = 0,
         device: str = "cpu",
         gamma: float = 0.99,
@@ -297,10 +313,16 @@ class ToM_PBVI_Agent(ModelBasedAgent):
         self.joint_obs_dim = world_model_config['joint_obs_dim']
         self.action_dim = world_model_config['action_dim']
 
-        self.ensemble: np.ndarray = ensemble
-        self.ensemble_tensor = torch.tensor(
-            ensemble, dtype=torch.float32, device=device,
-        ).unsqueeze(0)
+        # Joint ensemble: "mixed" + one per specialized agent type.
+        # The agent maintains one CharNet embedding per ensemble and optimises
+        # over the full (type × world) belief space simultaneously.
+        self.all_ensembles: dict[str, np.ndarray] = {"mixed": ensemble}
+        if spec_ensembles:
+            self.all_ensembles.update(spec_ensembles)
+        self.ensemble_tensors: dict[str, torch.Tensor] = {
+            name: torch.tensor(ens, dtype=torch.float32, device=device).unsqueeze(0)
+            for name, ens in self.all_ensembles.items()
+        }
         self.past_episode_context = ensemble.shape[0]
 
         # Caches
@@ -309,36 +331,36 @@ class ToM_PBVI_Agent(ModelBasedAgent):
 
         # PBVI planning tables
         self.policy: dict[tuple, int] = {}
-        # Alpha-vectors: priv_obs -> {consistent_world -> backed-up value}
-        self.alpha_vectors: dict[tuple, dict[tuple, float]] = {}
+        # Alpha-vectors: priv_h -> type_name -> {world -> backed-up value}
+        self.alpha_vectors: dict[tuple, dict[str, dict[tuple, float]]] = {}
+        # Per-type Bayesian world beliefs: type_name -> priv_h -> {world -> prob}
+        self.beliefs_per_type: dict[str, dict[tuple, dict[tuple, float]]] = {}
+        # Marginal type posterior: priv_h -> {type_name -> prob}
+        self.type_posteriors: dict[tuple, dict[str, float]] = {}
 
         self._init_tables()
+        return
 
-    # ------------------------------------------------------------------
     # Initialisation
-    # ------------------------------------------------------------------
-
     def _init_tables(self):
-        for history, done, _turn_id, _reward in self.all_private_histories:
-            if done:
-                continue
-            # Pre-populate consistent worlds so every reachable private
-            # history is guaranteed to have a worlds_cache entry before
-            # train() or act() is called.
+        pbar = tqdm(self.all_private_histories, desc="Init Tables", leave=False)
+        
+        for history, done, _, _ in pbar:
             worlds = self._get_consistent_worlds(history)
-            if not worlds:
+
+            if done or not worlds:
                 continue
+
             if self.is_decpomdp:
                 legal = tuple(range(self.num_actions))
             else:
                 _, legal = self.env.num_legal_actions(history)
             self.legal_actions_cache[history] = legal
             self.policy[history] = random.choice(legal)
+        return
 
-    # ------------------------------------------------------------------
-    # Belief / consistent-world computation  (unchanged)
-    # ------------------------------------------------------------------
 
+    # Consistent-world computation  (unchanged)
     def _get_consistent_worlds(self, obs):
         if obs in self.worlds_cache:
             return self.worlds_cache[obs]
@@ -382,11 +404,22 @@ class ToM_PBVI_Agent(ModelBasedAgent):
     # World-model query  (unchanged)
     # ------------------------------------------------------------------
 
-    def _predict_partner_policy(self, world, action, next_obs):
+    def _predict_partner_policy(
+        self,
+        world,
+        next_obs,
+        ens_tensor: torch.Tensor,
+    ) -> np.ndarray:
         """Return P(a_partner) as a numpy array of shape (action_dim,).
 
-        Uses self.ensemble_tensor, which may have been updated via
-        add_ens_history() to reflect the actual partner at execution time.
+        We always predict the partner's action (never our own), so own_action
+        is always irrelevant — a zero vector is passed to the obs_trunk input.
+
+        Parameters
+        ----------
+        world      : consistent joint-history tuple (deal + past actions)
+        next_obs   : own follow-up observation at this step
+        ens_tensor : CharNet context for a specific partner type, shape (1, N, seq, feat)
         """
         deal_len = 2 if self.is_decpomdp else 4
         world_hands = list(world[:deal_len])
@@ -397,24 +430,163 @@ class ToM_PBVI_Agent(ModelBasedAgent):
         for i, obs in enumerate(joint_h):
             h_enc[i] = _encode_joint_observation(obs, self.joint_obs_dim, self.env)
 
-        # Include the focal agent's own action/observation so the history
-        # matches what the world model saw during training at this timestep.
+        # Include the focal agent's own observation so the history matches
+        # what the world model saw during training at this timestep.
         own_step_idx = len(joint_h)
         if own_step_idx < self.max_seq_len:
             h_enc[own_step_idx] = _encode_joint_observation(next_obs, self.joint_obs_dim, self.env)
 
-        a_enc = _encode_action(action, self.action_dim)
         z_enc = _encode_observation(next_obs, self.obs_dim, self.env)
 
         hist_t = torch.tensor(h_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
-        act_t  = torch.tensor(a_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
         obs_t  = torch.tensor(z_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         with torch.no_grad():
-            logits, _, _ = self.world_model(
-                self.ensemble_tensor, hist_t, obs_t, act_t,
-            )
+            logits, _, _ = self.world_model(ens_tensor, hist_t, obs_t)
         return torch.softmax(logits, dim=-1).cpu().numpy()[0]
+
+    def _query_action_probs(
+        self,
+        world_prefix: tuple,
+        next_obs,
+        ens_tensor: torch.Tensor,
+    ) -> np.ndarray:
+        """Return P(next_action | history_prefix) for Bayesian belief updates.
+
+        Encodes *only* the world prefix (deal + past actions) without appending
+        the focal agent's next observation — matching training at that timestep.
+
+        Parameters
+        ----------
+        world_prefix : tuple  — deal + actions up to (not including) the one being predicted
+        next_obs              — own follow-up observation (matches training's priv_z_enc)
+        ens_tensor            — CharNet context for a specific partner type
+        """
+        deal_len = 2 if self.is_decpomdp else 4
+        world_hands = list(world_prefix[:deal_len])
+        actions = list(world_prefix[deal_len:])
+        joint_h = [world_hands] + actions
+
+        h_enc = np.zeros((self.max_seq_len, self.joint_obs_dim), dtype=np.float32)
+        for i, obs in enumerate(joint_h):
+            h_enc[i] = _encode_joint_observation(obs, self.joint_obs_dim, self.env)
+
+        z_enc = _encode_observation(next_obs, self.obs_dim, self.env)
+
+        hist_t = torch.tensor(h_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
+        obs_t  = torch.tensor(z_enc, dtype=torch.float32, device=self.device).unsqueeze(0)
+
+        with torch.no_grad():
+            logits, _, _ = self.world_model(ens_tensor, hist_t, obs_t)
+        return torch.softmax(logits, dim=-1).cpu().numpy()[0]
+
+    # ------------------------------------------------------------------
+    # Bayesian belief computation
+    # ------------------------------------------------------------------
+
+    def _compute_beliefs(self):
+        """Compute the joint Bayesian posterior b(w, k | h^i) for every
+        non-terminal private history h^i, over all consistent worlds w and
+        all ensemble types k.
+
+        The joint posterior factorises as:
+
+            b(w, k | h^i) ∝ P(k) · ∏_{partner steps t} P_WM^k(a^{-i}_t | prefix_t)
+
+        with a uniform prior P(k) = 1/K.  After normalisation over all
+        (w, k) pairs we recover:
+
+            beliefs_per_type[k][h^i][w]  — world belief conditioned on type k
+            type_posteriors[h^i][k]      — marginal type posterior P(k | h^i)
+
+        Root histories receive a uniform prior over all (w, k) pairs.
+        """
+        deal_len = 2 if self.is_decpomdp else 4
+        type_names = list(self.all_ensembles.keys())
+        n_types = len(type_names)
+
+        # Re-initialise per-type belief dicts
+        for k in type_names:
+            self.beliefs_per_type[k] = {}
+        self.type_posteriors.clear()
+
+        pbar = tqdm(self.all_private_histories, desc="Belief computation", leave=False)
+        for priv_h, done, _turn_id, _ in pbar:
+            if done:
+                continue
+            worlds = self._get_consistent_worlds(priv_h)
+            if not worlds:
+                continue
+
+            actions_in_h = priv_h[deal_len:]
+
+            # Determine which player we are from the masked cards
+            if self.is_decpomdp:
+                we_are_p0 = (priv_h[0] == -1)
+            else:
+                we_are_p0 = (priv_h[0] == -1 and priv_h[1] == -1)
+
+            if not actions_in_h:
+                # Root: uniform joint prior over all (type, world) pairs
+                u_world = 1.0 / len(worlds)
+                u_type  = 1.0 / n_types
+                for k in type_names:
+                    self.beliefs_per_type[k][priv_h] = {w: u_world for w in worlds}
+                self.type_posteriors[priv_h] = {k: u_type for k in type_names}
+                continue
+
+            # ----------------------------------------------------------------
+            # log P(observed partner actions | world w, type k)
+            # for every (k, w) pair.
+            # ----------------------------------------------------------------
+            log_joint: dict[tuple[str, tuple], float] = {}
+
+            pbar_k = tqdm(type_names, desc="  Types", leave=False)
+            for k in pbar_k:
+                pbar_k.set_postfix({"type": k})
+                ens_t = self.ensemble_tensors[k]
+                for w in worlds:
+                    w_actions = w[deal_len:]
+                    lb = 0.0
+                    for step_idx in range(len(w_actions)):
+                        is_p0_action = (step_idx % 2 == 0)
+                        is_partner   = (is_p0_action != we_are_p0)
+                        if not is_partner:
+                            continue
+                        prefix       = w[:deal_len + step_idx]
+                        own_next_obs = w_actions[step_idx]  # both players see same event
+                        probs = self._query_action_probs(prefix, own_next_obs, ens_t)
+                        partner_action = own_next_obs if self.is_decpomdp else own_next_obs[0]
+                        lb += np.log(float(probs[partner_action]) + 1e-10)
+                    log_joint[(k, w)] = lb
+
+            # Log-sum-exp normalisation over all (k, w) pairs
+            max_lb = max(log_joint.values())
+            joint = {kw: np.exp(lb - max_lb) for kw, lb in log_joint.items()}
+            total = sum(joint.values())
+            if total < 1e-30:
+                # Numerical underflow — fall back to uniform
+                u_world = 1.0 / len(worlds)
+                u_type  = 1.0 / n_types
+                for k in type_names:
+                    self.beliefs_per_type[k][priv_h] = {w: u_world for w in worlds}
+                self.type_posteriors[priv_h] = {k: u_type for k in type_names}
+                continue
+
+            joint = {kw: v / total for kw, v in joint.items()}
+
+            # Marginalise → type posterior P(k | h^i) and world belief b_k(w | h^i)
+            type_post: dict[str, float] = {}
+            for k in type_names:
+                pk = sum(joint[(k, w)] for w in worlds)
+                type_post[k] = pk
+                if pk > 1e-30:
+                    self.beliefs_per_type[k][priv_h] = {
+                        w: joint[(k, w)] / pk for w in worlds
+                    }
+                else:
+                    self.beliefs_per_type[k][priv_h] = {w: 1.0 / len(worlds) for w in worlds}
+            self.type_posteriors[priv_h] = type_post
 
     # ------------------------------------------------------------------
     # PBVI training
@@ -431,6 +603,9 @@ class ToM_PBVI_Agent(ModelBasedAgent):
 
         Returns max |delta V(b)| across all belief points.
         """
+        # Compute Bayesian beliefs before the backward sweep
+        self._compute_beliefs()
+
         max_delta = 0.0
 
         pbar = tqdm(self.all_private_histories, desc="ToM-PBVI sweep", leave=False)
@@ -442,17 +617,32 @@ class ToM_PBVI_Agent(ModelBasedAgent):
             if not worlds:
                 continue
 
-            best_alpha, best_action = self._pbvi_backup(priv_h, worlds)
+            best_alphas, best_action = self._pbvi_backup(priv_h, worlds)
 
-            # Convergence delta (uniform belief)
-            prob = 1.0 / len(worlds)
-            new_val = sum(prob * best_alpha.get(w, 0.0) for w in worlds)
-            old_alpha = self.alpha_vectors.get(priv_h, {})
-            old_val = sum(prob * old_alpha.get(w, 0.0) for w in worlds)
+            # Convergence delta: joint expected value under the full (type × world) belief
+            type_names = list(self.all_ensembles.keys())
+            n_types    = len(type_names)
+            type_post  = self.type_posteriors.get(
+                priv_h, {k: 1.0 / n_types for k in type_names}
+            )
+
+            def _joint_val(alpha_pt):
+                return sum(
+                    type_post.get(k, 0.0) * sum(
+                        self.beliefs_per_type.get(k, {}).get(priv_h, {}).get(w, 0.0)
+                        * alpha_pt.get(k, {}).get(w, 0.0)
+                        for w in worlds
+                    )
+                    for k in type_names
+                )
+
+            old_alphas = self.alpha_vectors.get(priv_h, {})
+            new_val = _joint_val(best_alphas)
+            old_val = _joint_val(old_alphas)
             max_delta = max(max_delta, abs(new_val - old_val))
 
             # In-place update so shallower backups see fresh values
-            self.alpha_vectors[priv_h] = best_alpha
+            self.alpha_vectors[priv_h] = best_alphas
             self.policy[priv_h] = best_action
 
             pbar.set_postfix({"max_delta": f"{max_delta:.6f}"})
@@ -463,220 +653,228 @@ class ToM_PBVI_Agent(ModelBasedAgent):
         self,
         priv_h: tuple,
         worlds: list[tuple],
-    ) -> tuple[dict[tuple, float], int]:
-        """
-        Point-based backup for a single belief point.
+    ) -> tuple[dict[str, dict[tuple, float]], int]:
+        """Point-based backup for a single belief point over the joint
+        (type × world) space.
 
-        For each legal action a_i, builds an alpha-vector  alpha_a : world -> float
-        by simulating the action, querying the world model for the partner's
-        stochastic response, and looking up the per-world continuation value
-        from the already-computed alpha-vector at the next private observation.
+        For each legal own-action a_i and each ensemble type k, builds an
+        alpha-vector  alpha_a^k : world -> float  using the type-k world model
+        to predict the partner's response.  Action selection maximises the
+        joint expected value:
 
-        Returns (best_alpha_vector, best_action).
+            Q(h^i, a_i) = Σ_k P(k|h^i) · Σ_w b_k(w|h^i) · alpha_a^k(w)
+
+        Returns (best_alpha_per_type, best_action)
+            where best_alpha_per_type : {type_name -> {world -> float}}
         """
+        type_names    = list(self.all_ensembles.keys())
+        n_types       = len(type_names)
         legal_actions = self.legal_actions_cache[priv_h]
-        prob = 1.0 / len(worlds)
 
-        best_value  = -float('inf')
-        best_alpha:  dict[tuple, float] = {}
-        best_action = legal_actions[0]
+        # Retrieve joint beliefs; fall back to uniform if not yet computed
+        type_post  = self.type_posteriors.get(
+            priv_h, {k: 1.0 / n_types for k in type_names}
+        )
+        beliefs_pt = {
+            k: self.beliefs_per_type.get(k, {}).get(
+                priv_h, {w: 1.0 / len(worlds) for w in worlds}
+            )
+            for k in type_names
+        }
 
-        for a_i in legal_actions:
-            alpha_a: dict[tuple, float] = {}
+        best_value   = -float('inf')
+        best_alphas: dict[str, dict[tuple, float]] = {}
+        best_action  = legal_actions[0]
 
-            for world in worlds:
-                self.env.reset(list(world))
-                try:
-                    self.env.step(a_i)
-                except ValueError:
-                    alpha_a[world] = 0.0
-                    continue
+        pbar_a = tqdm(legal_actions, desc="    Actions", leave=False)
+        for a_i in pbar_a:
+            alpha_per_type: dict[str, dict[tuple, float]] = {}
 
-                # Own action ends the game
-                if self.env.is_terminal():
-                    alpha_a[world] = self.env.payoff()
-                    continue
+            pbar_k = tqdm(type_names, desc="      Types", leave=False)
+            for k in pbar_k:
+                ens_t   = self.ensemble_tensors[k]
+                alpha_k: dict[tuple, float] = {}
 
-                # --- partner's stochastic response via world model ---
-                state_after_own = list(self.env.history)
-                own_next_obs = self.env.context()[-1]
-                partner_probs = self._predict_partner_policy(world, a_i, own_next_obs)
-
-                # Legal partner actions
-                if self.is_decpomdp:
-                    legal_partner = list(range(self.num_actions))
-                else:
-                    _, legal_partner = self.env.num_legal_actions(tuple(state_after_own))
-
-                # Renormalise predicted probs to legal actions
-                legal_arr = np.array(legal_partner, dtype=np.int64)
-                lp = np.atleast_1d(partner_probs[legal_arr])
-                psum = lp.sum()
-                lp = lp / psum if psum > 1e-8 else np.ones(len(legal_partner)) / len(legal_partner)
-
-                # Expected value over partner actions
-                world_val = 0.0
-                for idx, a_j in enumerate(legal_partner):
-                    p_j = float(lp[idx])
-
-                    self.env.reset(state_after_own)
+                for world in worlds:
+                    self.env.reset(list(world))
                     try:
-                        self.env.step(a_j)
+                        self.env.step(a_i)
                     except ValueError:
+                        alpha_k[world] = 0.0
                         continue
 
                     if self.env.is_terminal():
-                        world_val += p_j * self.env.payoff()
+                        alpha_k[world] = self.env.payoff()
+                        continue
+
+                    # Partner's stochastic response under type-k world model
+                    state_after_own = list(self.env.history)
+                    own_next_obs    = self.env.context()[-1]
+                    partner_probs   = self._predict_partner_policy(
+                        world, own_next_obs, ens_t
+                    )
+
+                    if self.is_decpomdp:
+                        legal_partner = list(range(self.num_actions))
                     else:
-                        next_state = tuple(self.env.history)
-                        next_priv  = self._mask_state(next_state)
-                        # PBVI: per-world value from the successor alpha-vector
-                        next_av = self.alpha_vectors.get(next_priv, {})
-                        world_val += p_j * self.gamma * next_av.get(next_state, 0.0)
+                        _, legal_partner = self.env.num_legal_actions(
+                            tuple(state_after_own)
+                        )
 
-                alpha_a[world] = world_val
+                    legal_arr = np.array(legal_partner, dtype=np.int64)
+                    lp = np.atleast_1d(partner_probs[legal_arr])
+                    psum = lp.sum()
+                    lp = (
+                        lp / psum if psum > 1e-8
+                        else np.ones(len(legal_partner)) / len(legal_partner)
+                    )
 
-            # b_h . alpha_a  (uniform belief)
-            value = sum(prob * alpha_a.get(w, 0.0) for w in worlds)
+                    world_val = 0.0
+                    for idx, a_j in enumerate(legal_partner):
+                        p_j = float(lp[idx])
+                        self.env.reset(state_after_own)
+                        try:
+                            self.env.step(a_j)
+                        except ValueError:
+                            continue
+
+                        if self.env.is_terminal():
+                            world_val += p_j * self.env.payoff()
+                        else:
+                            next_state = tuple(self.env.history)
+                            next_priv  = self._mask_state(next_state)
+                            # Look up successor alpha-vector for this type
+                            next_av_k  = self.alpha_vectors.get(next_priv, {}).get(k, {})
+                            world_val  += p_j * self.gamma * next_av_k.get(next_state, 0.0)
+
+                    alpha_k[world] = world_val
+
+                alpha_per_type[k] = alpha_k
+
+            # Joint expected value: Σ_k P(k|h^i) · Σ_w b_k(w|h^i) · alpha_a^k(w)
+            value = sum(
+                type_post.get(k, 0.0) * sum(
+                    beliefs_pt[k].get(w, 0.0) * alpha_per_type[k].get(w, 0.0)
+                    for w in worlds
+                )
+                for k in type_names
+            )
             if value > best_value:
                 best_value  = value
-                best_alpha  = alpha_a
+                best_alphas = alpha_per_type
                 best_action = a_i
 
-        return best_alpha, best_action
+        return best_alphas, best_action
 
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
 
     def act(self, private_history, exploit=False):
-        """
-        Select an action by re-evaluating the one-step belief backup using the
-        current self.ensemble_tensor.
+        """Select an action via a one-step joint (type × world) belief backup.
 
-        At training time (unmodified ensemble) this reproduces the training-time
-        optimal action.  After add_ens_history() calls accumulate observed
-        episodes with the actual partner, CharacterNet refines its partner
-        embedding and the world model's action predictions shift accordingly —
-        changing which action maximises expected value without rerunning the
-        full backward sweep.
+        For each candidate action a_i the expected value is:
+
+            Q(h^i, a_i) = Σ_k P(k|h^i) · Σ_w b_k(w|h^i)
+                            · [R_k(w, a_i) + γ Σ_{a_j} P_WM^k(a_j|…) · V^k(next)]
+
+        where P(k|h^i) and b_k(w|h^i) come from the pre-computed joint belief
+        and V^k(next) from the per-type alpha-vectors stored at training time.
 
         The env state is saved and restored so that act() is side-effect free.
         """
-        worlds = self._get_consistent_worlds(private_history)
+        worlds        = self._get_consistent_worlds(private_history)
         legal_actions = self.legal_actions_cache.get(private_history)
+        type_names    = list(self.all_ensembles.keys())
+        n_types       = len(type_names)
 
-        # Save current environment state so simulation below doesn't corrupt it
         saved_history = list(self.env.history)
 
-        prob = 1.0 / len(worlds)
+        # Retrieve pre-computed joint beliefs; fall back to uniform
+        type_post  = self.type_posteriors.get(
+            private_history, {k: 1.0 / n_types for k in type_names}
+        )
+        beliefs_pt = {
+            k: self.beliefs_per_type.get(k, {}).get(
+                private_history, {w: 1.0 / len(worlds) for w in worlds}
+            )
+            for k in type_names
+        }
+
         best_a   = legal_actions[0]
         best_val = -float('inf')
 
         for a_i in legal_actions:
-            total = 0.0
+            total_val = 0.0
 
-            for w in worlds:
-                self.env.reset(list(w))
-                try:
-                    self.env.step(a_i)
-                except ValueError:
-                    continue
+            for k in type_names:
+                pk    = type_post.get(k, 0.0)
+                bk    = beliefs_pt[k]
+                ens_t = self.ensemble_tensors[k]
 
-                if self.env.is_terminal():
-                    total += self.env.payoff()
-                    continue
+                for w in worlds:
+                    bwk = bk.get(w, 0.0)
+                    # Skip negligible (type, world) pairs for speed
+                    if pk * bwk < 1e-12:
+                        continue
 
-                state_after_own = list(self.env.history)
-                own_next_obs    = self.env.context()[-1]
-
-                # World-model query with the (possibly updated) ensemble
-                partner_probs = self._predict_partner_policy(w, a_i, own_next_obs)
-
-                if self.is_decpomdp:
-                    legal_partner = list(range(self.num_actions))
-                else:
-                    _, legal_partner = self.env.num_legal_actions(tuple(state_after_own))
-
-                legal_arr = np.array(legal_partner, dtype=np.int64)
-                lp = np.atleast_1d(partner_probs[legal_arr])
-                psum = lp.sum()
-                lp = lp / psum if psum > 1e-8 else np.ones(len(legal_partner)) / len(legal_partner)
-
-                world_val = 0.0
-                for idx, a_j in enumerate(legal_partner):
-                    p_j = float(lp[idx])
-                    self.env.reset(state_after_own)
+                    self.env.reset(list(w))
                     try:
-                        self.env.step(a_j)
+                        self.env.step(a_i)
                     except ValueError:
                         continue
 
                     if self.env.is_terminal():
-                        world_val += p_j * self.env.payoff()
+                        total_val += pk * bwk * self.env.payoff()
+                        continue
+
+                    state_after_own = list(self.env.history)
+                    own_next_obs    = self.env.context()[-1]
+
+                    partner_probs = self._predict_partner_policy(
+                        w, own_next_obs, ens_t
+                    )
+
+                    if self.is_decpomdp:
+                        legal_partner = list(range(self.num_actions))
                     else:
-                        next_state = tuple(self.env.history)
-                        next_priv  = self._mask_state(next_state)
-                        next_av    = self.alpha_vectors.get(next_priv, {})
-                        world_val += p_j * self.gamma * next_av.get(next_state, 0.0)
+                        _, legal_partner = self.env.num_legal_actions(
+                            tuple(state_after_own)
+                        )
 
-                total += world_val
+                    legal_arr = np.array(legal_partner, dtype=np.int64)
+                    lp = np.atleast_1d(partner_probs[legal_arr])
+                    psum = lp.sum()
+                    lp = (
+                        lp / psum if psum > 1e-8
+                        else np.ones(len(legal_partner)) / len(legal_partner)
+                    )
 
-            avg_val = total * prob
-            if avg_val > best_val:
-                best_val = avg_val
+                    for idx, a_j in enumerate(legal_partner):
+                        p_j = float(lp[idx])
+                        self.env.reset(state_after_own)
+                        try:
+                            self.env.step(a_j)
+                        except ValueError:
+                            continue
+
+                        if self.env.is_terminal():
+                            total_val += pk * bwk * p_j * self.env.payoff()
+                        else:
+                            next_state = tuple(self.env.history)
+                            next_priv  = self._mask_state(next_state)
+                            next_av_k  = self.alpha_vectors.get(next_priv, {}).get(k, {})
+                            total_val  += (
+                                pk * bwk * p_j
+                                * self.gamma * next_av_k.get(next_state, 0.0)
+                            )
+
+            if total_val > best_val:
+                best_val = total_val
                 best_a   = a_i
 
-        # Restore environment to its pre-act() state
         self.env.reset(saved_history)
         return best_a
-
-    # ------------------------------------------------------------------
-    # Ensemble management for repeated-play adaptation
-    # ------------------------------------------------------------------
-
-    def reset_ensemble(self) -> None:
-        """Restore self.ensemble_tensor to the original mixed training ensemble."""
-        self.ensemble_tensor = torch.tensor(
-            self.ensemble, dtype=torch.float32, device=self.device,
-        ).unsqueeze(0)
-
-    def add_ens_history(self, h: list | np.ndarray) -> None:
-        """Append one episode to the live ensemble (sliding window).
-
-        The oldest episode is dropped so that ensemble_tensor always holds
-        exactly self.past_episode_context episodes — matching the window size
-        seen during world-model training.
-
-        Parameters
-        ----------
-        h : list or np.ndarray
-            Either a raw episode list as returned by env.episode() (trailing
-            payoff float is stripped automatically), or a pre-encoded array of
-            shape (seq_len, joint_obs_dim).
-
-        After each call CharacterNet will see one more episode from the actual
-        partner, progressively sharpening the partner-type embedding used by
-        _predict_partner_policy during act().
-        """
-        if isinstance(h, np.ndarray) and h.ndim == 2:
-            # Already encoded: shape (seq_len, joint_obs_dim)
-            enc = h.astype(np.float32)
-        else:
-            # Raw episode list — strip trailing payoff if present
-            if h and isinstance(h[-1], float):
-                h = h[:-1]
-            deal_len = 2 if self.is_decpomdp else 4
-            joint_h  = [tuple(h[:deal_len])] + list(h[deal_len:])
-            enc = np.zeros((self.max_seq_len, self.joint_obs_dim), dtype=np.float32)
-            for i, obs in enumerate(joint_h[:self.max_seq_len]):
-                enc[i] = _encode_joint_observation(obs, self.joint_obs_dim, self.env)
-
-        new_ep = torch.tensor(enc, dtype=torch.float32, device=self.device)
-        new_ep = new_ep.view(1, 1, self.max_seq_len, self.joint_obs_dim)
-        # Slide window: drop oldest episode, append new one
-        # ensemble_tensor shape: (1, N_eps, seq_len, joint_obs_dim)
-        self.ensemble_tensor = torch.cat([self.ensemble_tensor[:, 1:], new_ep], dim=1)
 
     def save_transition(self, *args): pass
 
@@ -687,7 +885,16 @@ class ToM_PBVI_Agent(ModelBasedAgent):
     def save(self, path):
         data = {
             "policy": self.policy,
-            "alpha_vectors": {k: dict(v) for k, v in self.alpha_vectors.items()},
+            # alpha_vectors: priv_h -> {type_name -> {world -> value}}
+            "alpha_vectors": {
+                priv_h: {k: dict(wv) for k, wv in type_av.items()}
+                for priv_h, type_av in self.alpha_vectors.items()
+            },
+            "beliefs_per_type": {
+                type_name: {priv_h: dict(wv) for priv_h, wv in bpt.items()}
+                for type_name, bpt in self.beliefs_per_type.items()
+            },
+            "type_posteriors": dict(self.type_posteriors),
         }
         with open(path, "wb") as f:
             pickle.dump(data, f)
@@ -697,13 +904,8 @@ class ToM_PBVI_Agent(ModelBasedAgent):
             data = pickle.load(f)
         self.policy.update(data["policy"])
         self.alpha_vectors.update(data.get("alpha_vectors", {}))
-
-    def set_ensemble(self, ensemble: np.ndarray) -> None:
-        """Swap the past-episode context fed to CharacterNet."""
-        self.ensemble = ensemble
-        self.ensemble_tensor = torch.tensor(
-            ensemble, dtype=torch.float32, device=self.device,
-        ).unsqueeze(0)
+        self.beliefs_per_type.update(data.get("beliefs_per_type", {}))
+        self.type_posteriors.update(data.get("type_posteriors", {}))
 
     # ------------------------------------------------------------------
     # Observation masking
@@ -726,4 +928,6 @@ class ToM_PBVI_Agent(ModelBasedAgent):
     def reset(self):
         self.alpha_vectors.clear()
         self.policy.clear()
+        self.beliefs_per_type.clear()
+        self.type_posteriors.clear()
         self._init_tables()

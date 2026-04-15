@@ -136,23 +136,23 @@ BASELINE_EXPERIMENTS = [
         list_class=VDN_CentralPlanner
     ),
     Experiment(
-        name="JESP",
-        agent_class=JESP_Agent,
-        param_list=jesp_params,
-        list_class=JESP_List
-    ),
-    Experiment(
         name="PBDP",
         agent_class=PBDP_Agent,
         param_list=pbdp_params,
         list_class=PBDP_Central_Planner
     ),
-    Experiment(
-        name="OSarsa",
-        agent_class=OSarsa_Agent,
-        param_list=osarsa_params,
-        list_class=OSarsa_Planner
-    ),
+    #Experiment(
+    #    name="JESP",
+    #    agent_class=JESP_Agent,
+    #    param_list=jesp_params,
+    #    list_class=JESP_List
+    #),
+    #Experiment(
+    #    name="OSarsa",
+    #    agent_class=OSarsa_Agent,
+    #    param_list=osarsa_params,
+    #    list_class=OSarsa_Planner
+    #),
 ]
 
 NUM_AGENT_TYPES = len(BASELINE_EXPERIMENTS)
@@ -185,23 +185,23 @@ def load_best_baselinesagents():
             list_class=VDN_CentralPlanner
         ),
         Experiment(
-            name="JESP",
-            agent_class=JESP_Agent,
-            param_list=load_best_params("JESP"),
-            list_class=JESP_List
-        ),
-        Experiment(
             name="PBDP",
             agent_class=PBDP_Agent,
             param_list=load_best_params("PBDP"),
             list_class=PBDP_Central_Planner
         ),
-        Experiment(
-            name="OSarsa",
-            agent_class=OSarsa_Agent,
-            param_list=load_best_params("OSarsa"),
-            list_class=OSarsa_Planner
-        ),
+        #Experiment(
+        #    name="JESP",
+        #    agent_class=JESP_Agent,
+        #    param_list=load_best_params("JESP"),
+        #    list_class=JESP_List
+        #),
+        #Experiment(
+        #    name="OSarsa",
+        #    agent_class=OSarsa_Agent,
+        #    param_list=load_best_params("OSarsa"),
+        #    list_class=OSarsa_Planner
+        #),
     ]
     return experiments
 

@@ -57,6 +57,8 @@ def load_world_model_and_config(game_name: str, device: str, env : Game) -> tupl
         'char_embed_dim': wm_training_params['char_dim'],
         'mental_embed_dim': wm_training_params['mental_dim'],
         'trunk_dim': wm_training_params['trunk_dim'],
+        'lr' : wm_training_params['lr'],
+        
         'action_output_dim' : ACT_DIM
     }
 
@@ -117,7 +119,7 @@ def train_test_tom():
 
     # Train and evaluate    
     all_evaluation_results = {}
-    pbar = tqdm(GAMES, desc=f"DTDE_ToMBI")
+    pbar = tqdm(GAMES, desc=f"ToM-PBVI")
     for game_name in pbar:
         postfix = {
             "Game" : game_name
@@ -144,11 +146,14 @@ def train_test_tom():
         special_ensemble = special_ensembles[game_name]
         env = environments[game_name]
 
-        # Set up ToM Agent — single instance covers both player positions
+        # Set up ToM Agent — single instance covers both player positions.
+        # All ensembles (mixed + per-type specialized) are passed so the agent
+        # reasons jointly over type uncertainty during planning and execution.
         tom_agent = ToM_PBVI_Agent(
             env=env,
             num_cards=env.num_cards,
             ensemble=ensemble,
+            spec_ensembles=special_ensemble,
             num_actions=env.num_actions,
             world_model=world_model,
             world_model_config=wm_config,
@@ -158,66 +163,48 @@ def train_test_tom():
         tqdm.write(f"{game_name} | Num. s0 : {len(env.start_states())} | Num. S {len(tom_agent.all_joint_histories)} | Num priv h {len(tom_agent.all_private_histories)}")
         agent_list : AgentList = AgentList([tom_agent, tom_agent])
         start_states = env.start_states()
-        # Prep Training + testing
-        loss_results = []
 
-        reward_results = []
-
-        spc_ens_p0_reward_results = []
-        spc_ens_p1_reward_results = []
-
-        mix_ens_p0_reward_results = []
-        mix_ens_p1_reward_results = []
+        # Result accumulators
+        loss_results      = []
+        reward_results    = []
+        p0_reward_results = []
+        p1_reward_results = []
 
         # Planning and Testing Step
         pbar_2 = tqdm(range(50), desc="Iterations", leave=False)
 
-        self_play_reward, spc_ens_p0_reward, spc_ens_p1_reward, mix_ens_p0_reward, mix_ens_p1_reward = None, None, None, None, None
+        self_play_reward, p0_reward, p1_reward = None, None, None
         for it in pbar_2:
-            postfix_2 = {
+            pbar_2.set_postfix({
                 "Iter" : it,
-                "Rew" : self_play_reward if self_play_reward else "None",
-                "Rew_p0" : spc_ens_p0_reward if spc_ens_p0_reward else "None",
-                "Rew_p1" : spc_ens_p1_reward if spc_ens_p1_reward else "None",
-            }
-            pbar_2.set_postfix(postfix_2)
+                "Rew"  : f"{self_play_reward:.3f}" if self_play_reward is not None else "—",
+                "P0"   : f"{p0_reward:.3f}"        if p0_reward        is not None else "—",
+                "P1"   : f"{p1_reward:.3f}"        if p1_reward        is not None else "—",
+            })
 
-            # Planning
+            # Planning — joint (type × world) PBVI sweep
             delta = tom_agent.train()
             loss_results.append(delta)
 
-            rewards = _evaluate_agents(env,
-                                       tom_agent,
-                                       agent_list,
-                                       start_states,
-                                       baseline_agents,
-                                       game_name,
-                                       ensemble,
-                                       special_ensemble)
-            
-            self_play_reward, spc_ens_p0_reward, spc_ens_p1_reward, mix_ens_p0_reward, mix_ens_p1_reward = rewards
+            self_play_reward, p0_reward, p1_reward = _evaluate_agents(
+                env, tom_agent, agent_list, start_states, baseline_agents, game_name
+            )
             reward_results.append(self_play_reward)
-            spc_ens_p0_reward_results.append(spc_ens_p0_reward)
-            spc_ens_p1_reward_results.append(spc_ens_p1_reward)
-            mix_ens_p0_reward_results.append(mix_ens_p0_reward)
-            mix_ens_p1_reward_results.append(mix_ens_p1_reward)
+            p0_reward_results.append(p0_reward)
+            p1_reward_results.append(p1_reward)
 
             if delta == 0.0 and it != 49:
-                tqdm.write(f"Game {game_name} - Finished early at ite {it + 1}")
+                tqdm.write(f"Game {game_name} - Finished early at iter {it + 1}")
                 break
-
 
         # Save Game specific policy
         tom_agent.save(os.path.join(tom_results_dir, f"G_{game_name}_agent.pkl"))
 
         # Cache Results
-        all_evaluation_results[f"reward_{game_name}"] = reward_results
-        all_evaluation_results[f"reward_{game_name}_0_mix"] = mix_ens_p0_reward_results
-        all_evaluation_results[f"reward_{game_name}_1_mix"] = mix_ens_p1_reward_results
-        all_evaluation_results[f"reward_{game_name}_0_spc"] = spc_ens_p0_reward_results
-        all_evaluation_results[f"reward_{game_name}_1_spc"] = spc_ens_p1_reward_results
-
-        all_evaluation_results[f"loss_{game_name}"] = loss_results
+        all_evaluation_results[f"reward_{game_name}"]    = reward_results
+        all_evaluation_results[f"reward_{game_name}_p0"] = p0_reward_results
+        all_evaluation_results[f"reward_{game_name}_p1"] = p1_reward_results
+        all_evaluation_results[f"loss_{game_name}"]      = loss_results
 
     # Save Results
     results_df = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in all_evaluation_results.items()]))
@@ -263,47 +250,39 @@ def _evaluate_agents(
     start_states: list,
     baseline_agents: dict,
     game_name: str,
-    mixed_ensemble: np.ndarray,
-    specialized_ensembles: dict[str, np.ndarray] | None,
-) -> tuple[float, float, float, float, float]:
-    optimal = OPTIMAL_RETURNS[game_name]
-    n_starts = len(start_states)
+) -> tuple[float, float, float]:
+    """Evaluate the ToM agent using its joint (type × world) belief.
 
-    # Self-play — mixed ensemble
-    tom_agent.set_ensemble(mixed_ensemble)
+    The agent no longer needs an explicit ensemble swap — it infers the
+    partner type online via its pre-computed type posteriors.
+
+    Returns
+    -------
+    (self_play, cross_play_p0, cross_play_p1)
+        Each normalised by the optimal return for the game.
+    """
+    optimal  = OPTIMAL_RETURNS[game_name]
+    n_starts = len(start_states)
+    n_types  = len(baseline_agents)
+
+    # Self-play: both seats are the same ToM agent
     self_play_total = 0.0
     for s0 in start_states:
         self_play_total += run_episode(env, agent_list, s0, True)[-1]
-    self_play_total = self_play_total / n_starts / optimal
+    self_play_total /= n_starts * optimal
 
-    p0_spc_total = 0.0
-    p1_spc_total = 0.0
-    p0_mix_total = 0.0
-    p1_mix_total = 0.0
-
+    # Cross-play: ToM vs each baseline type, averaged over types and starts
+    p0_total = 0.0
+    p1_total = 0.0
     for s0 in start_states:
-        for base_type, base_agent_list in baseline_agents.items():
-            ens = specialized_ensembles[base_type]
+        for base_agent_list in baseline_agents.values():
+            p0_total += run_episode(env, AgentList([tom_agent, base_agent_list[1]]), s0, True)[-1]
+            p1_total += run_episode(env, AgentList([base_agent_list[0], tom_agent]), s0, True)[-1]
 
-            # Mixed ensemble
-            tom_agent.set_ensemble(mixed_ensemble)
-            p0_mix_total += run_episode(env, AgentList([tom_agent, base_agent_list[1]]), s0, True)[-1]
-            p1_mix_total += run_episode(env, AgentList([base_agent_list[0], tom_agent]), s0, True)[-1]
-
-            # Specialized ensemble
-            tom_agent.set_ensemble(ens)
-            p0_spc_total += run_episode(env, AgentList([tom_agent, base_agent_list[1]]), s0, True)[-1]
-            p1_spc_total += run_episode(env, AgentList([base_agent_list[0], tom_agent]), s0, True)[-1]
-
-    # Restore mixed for the next planning sweep
-    tom_agent.set_ensemble(mixed_ensemble)
-
-    n_types = len(baseline_agents)
-    p0_spc_total = p0_spc_total / (n_starts * n_types) / optimal
-    p1_spc_total = p1_spc_total / (n_starts * n_types) / optimal
-    p0_mix_total = p0_mix_total / (n_starts * n_types) / optimal
-    p1_mix_total = p1_mix_total / (n_starts * n_types) / optimal
-    return self_play_total, p0_spc_total, p1_spc_total, p0_mix_total, p1_mix_total
+    denom    = n_starts * n_types * optimal
+    p0_total /= denom
+    p1_total /= denom
+    return self_play_total, p0_total, p1_total
     
 
 if __name__ == "__main__":
