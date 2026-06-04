@@ -21,8 +21,9 @@ def run_training(env: Game, agents: AgentList, *args, **kwargs) -> tuple[np.ndar
 
 def run_model_free_training(
         env: Game, 
+        game_name : str,
         agents: AgentList,
-        train_episodes: int = 100_000,
+        train_episodes: int = 10_000,
         auto_break : bool = False,
         *args, **kwargs
 ) -> tuple[np.ndarray, np.ndarray, AgentList]:
@@ -38,7 +39,7 @@ def run_model_free_training(
         _ = run_episode(env, agents)
         
         loss = agents.train()
-        avg_test_reward = test_on_all_start_states(env, agents, game_name=kwargs.get('game_name'))
+        avg_test_reward = test_on_all_start_states(env, agents, game_name=game_name)
 
         loss_results.append(loss)
         reward_results.append(avg_test_reward)
@@ -59,10 +60,11 @@ def run_model_free_training(
 
 def run_model_based_planning(
     env: Game, 
+    game_name : str,
     agents: AgentList,
     max_iterations: int = None,
     convergence_threshold: float = 0.0001,
-    attempts: int = 1, # <--- NEW PARAMETER
+    attempts: int = 1,
     *args, **kwargs
 ) -> tuple[np.ndarray, np.ndarray, AgentList]:
     """
@@ -74,8 +76,6 @@ def run_model_based_planning(
 
     best_final_reward = -float('inf')
     best_results = (np.array([]), np.array([]), deepcopy(agents))
-
-    game_name = kwargs.get('game_name')
 
     # --- ATTEMPTS LOOP ---
     pbar = tqdm(range(attempts), desc="MB - Attempts", leave=False)
@@ -141,7 +141,7 @@ def run_model_based_planning(
     return best_results
 
 
-def test_on_all_start_states(env: Game, agents: AgentList, game_name: str = None) -> float:
+def test_on_all_start_states(env: Game, agents: AgentList, game_name: str) -> float:
     start_states = env.start_states()
     total_test_reward = 0.0
     for start_state in start_states:
@@ -149,9 +149,8 @@ def test_on_all_start_states(env: Game, agents: AgentList, game_name: str = None
         episode_reward = episode[-1]
         total_test_reward += episode_reward
     avg = total_test_reward / len(start_states)
-    optimal = OPTIMAL_RETURNS.get(game_name) if game_name is not None else None
-    if optimal is not None and optimal > 0:
-        avg = avg / optimal
+    optimal = OPTIMAL_RETURNS.get(game_name)
+    avg = avg / optimal
     return avg
 
 

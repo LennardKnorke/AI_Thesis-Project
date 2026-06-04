@@ -9,7 +9,7 @@ class MyHanabi(Game):
     """
     Playing Hanabi with one color and of N numbers.
     """
-    def __init__(self, payoffs: np.ndarray = None, optimal_return: float = 4.0, normalize : bool = False):
+    def __init__(self, payoffs: np.ndarray = None, normalize : bool = False):
         # Ignore payoffs and optimal return parameter
         self.num_cards = 4          # 4 unique cards in game (0, 1, 2, 3)
         self.cards_in_hand = 2          # Two cards per player
@@ -21,7 +21,7 @@ class MyHanabi(Game):
         # 
         self.horizon = 4 + 4 + 4 #Max horizone (4 start cards + four save declerations + 4 cards played)
         self.payoffs = None
-        self.optimal_return = optimal_return
+        self.optimal_return = 4.0
         
         # Relevant attributes during the game
         self.current_pile = []  # Discarded Card (Actual Integers discarded)
@@ -83,12 +83,11 @@ class MyHanabi(Game):
         count = 0.0
         for card in self.current_pile:
             # Increase Reward
-            if last_card is None or card > last_card:
-                last_card = card
+            if (last_card is None and card == 0) or (last_card is not None and card == last_card + 1):
                 count += 1.0
-            # Alternative (only perfect reward allowed?)
+                last_card = card
             #else:
-            #    count -= 1.0
+            #    break
         return float(count/self.optimal_return) if self.normalize else count
 
     

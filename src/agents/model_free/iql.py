@@ -1,189 +1,193 @@
-# agents/model_free/dtde_qlarning.py
-from collections import defaultdict, namedtuple
+# agents/model_free/iql.py
+
 import numpy as np
 import os
 import pickle
-from typing import Any
 
-
-from tiny_game import DecPOMDP, Game, MyHanabi
-from replaybuffer import ReplayBuffer, Transition # Using standard ReplayBuffer
-
-from ..base_agent import BaseAgent, ModelFreeAgent
+from tiny_game import DecPOMDP, Game
+from replaybuffer import ReplayBuffer
+from ..base_agent import ModelFreeAgent
 
 
 class IQ_Learning_Agent(ModelFreeAgent):
     """
     Independent Model Free Reinforcement Learning Agent
+    Lower Performance Bound
     """
-
     def __init__(
             self,
-            env : Game,
-            num_cards : int,
-            num_actions : int,
-            # Hyperparameters
-            lr: float = 0.1,
-            gamma: float = 0.9,
-            epsilon_start: float = 1.0,
-            epsilon_min: float = 0.05,
-            epsilon_decay: float = 0.9995,
-            batch_size: int = 32,
-            buffer_size: int = 10_000,
-            updates_per_train : int = 1,
+            env: Game,
+            game_name: str,
+            num_cards: int,
+            num_actions: int,
+            # Params
+            lr: float               = 0.1,
+            gamma: float            = 0.9,
+            epsilon_start: float    = 1.0,
+            epsilon_min: float      = 0.05,
+            epsilon_decay: float    = 0.9995,
+            batch_size: int         = 32,
+            buffer_size: int        = 10_000,
+            updates_per_train: int  = 1,
             *args, **kwargs):
         super().__init__(env, num_cards, num_actions, *args, **kwargs)
+        self.game_name = game_name
 
-        self.lr = lr
-        
-        self.gamma = gamma
-        
-        self.epsilon = epsilon_start
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_decay
-        self.batch_size = batch_size
-        self.buffer_size = buffer_size
-        self.updates_per_train = int(updates_per_train)
+        # Params
+        self.lr =                   lr
+        self.gamma =                gamma
+        self.epsilon =              epsilon_start
+        self.epsilon_min =          epsilon_min
+        self.epsilon_decay =        epsilon_decay
+        self.batch_size =           batch_size
+        self.buffer_size =          buffer_size
+        self.updates_per_train =    int(updates_per_train)
 
-        # Replay Buffer
-        self.replay_buffer = ReplayBuffer(buffer_size)
-        
-        # Q-Table
-        self.q_table = {}
-        #self.q_table = defaultdict(
-        #    lambda: np.ones(self.num_actions) * 10.0
-        #)
+        self.replay_buffer =        ReplayBuffer(buffer_size)
+
+        # Q-Table and greedy policy
+        self.policy =               {}
+        self.q_values =             {}
+        # Legal actions
+        self.legal_actions_cache =  {}
         return
-    
+
+
     def get_legal_actions_mask(self, history: tuple[int]) -> np.ndarray:
-        """Helper to get legal actions mask for an observation."""
         if isinstance(self.env, DecPOMDP):
             return np.ones(self.num_actions, dtype=bool)
-        else: # MyHanabi
+        else: 
             mask, _ = self.env.num_legal_actions(full_history=history)
             return np.array(mask, dtype=bool)
 
+
     def act(self, input_state: tuple[int], exploit=False) -> int:
-        # Get legal actions
-        if isinstance(self.env, DecPOMDP):
-            legal_actions = np.arange(self.num_actions)
-            legal_action_mask = np.ones(self.num_actions, dtype=bool)
-        else:
-            legal_action_mask, legal_actions = self.env.num_legal_actions()
-            legal_action_mask = np.array(legal_action_mask, dtype=bool)
+        # --- Ensure legal actions are cached for this state ---
+        if input_state not in self.legal_actions_cache:
+            mask = self.get_legal_actions_mask(input_state)
+            self.legal_actions_cache[input_state] = np.where(mask)[0].tolist()
+        legal_as = self.legal_actions_cache[input_state]
 
-        # Lazy init
-        if input_state not in self.q_table:
+        # --- Lazy init for Q‑values ---
+        if input_state not in self.q_values:
             q_values = np.zeros(self.num_actions)
-            q_values[legal_action_mask] = 10.0
+            for a in legal_as:
+                q_values[a] = 1.0          # optimistic initial value for legal actions
+            self.q_values[input_state] = q_values
 
-            self.q_table[input_state] = q_values
+        # --- Compute greedy action (only over legal actions) ---
+        if input_state not in self.policy:
+            # Mask illegal actions to -inf before argmax
+            q_vals = self.q_values[input_state].copy()
+            illegal_mask = np.ones(self.num_actions, dtype=bool)
+            illegal_mask[legal_as] = False
+            q_vals[illegal_mask] = -np.inf
+            best_action = int(np.argmax(q_vals))
+            self.policy[input_state] = best_action
 
-
-        # Exploit
+        # --- Epsilon‑greedy selection ---
         if exploit or np.random.rand() > self.epsilon:
-            q_values = self.q_table[input_state].copy()
-            q_values[~legal_action_mask] = -np.inf
-            max_val = np.max(q_values)
-            best_actions = np.flatnonzero(q_values == max_val)
-
-            action = np.random.choice(best_actions)
+            action = self.policy[input_state]
         else:
-            action = np.random.choice(legal_actions)
+            action = np.random.choice(legal_as)
         return int(action)
-    
+
     def save_transition(self, observation, action, next_observation, reward, done):
-        """
-        Store experience in the Replay Buffer.
-        """
         self.replay_buffer.push(
-            tuple(observation), 
-            action, 
-            reward, 
-            tuple(next_observation), 
+            tuple(observation),
+            action,
+            reward,
+            tuple(next_observation),
             done
         )
+        return
 
-    def train(self)->float:
-        """
-        Samples a batch from memory and performs Q-Learning updates.
-        Returns the average loss (temporal difference error).
-        """
-        # 1. Check Buffer Size
+    def train(self) -> float:
         if len(self.replay_buffer) < self.batch_size:
-            return 0.0  # Not enough samples to train
-        
-        total_loss = 0.0
-        
+            return 0.0
 
+        total_loss = 0.0
         for _ in range(self.updates_per_train):
             batch = self.replay_buffer.sample(self.batch_size)
             batch_loss = 0.0
-            # 2. Loop over Batch
+
             for transition in batch:
                 state, action, reward, next_state, done = transition
 
-                # Lazy init — uniform optimistic value; legal masking happens at act() time
-                if state not in self.q_table:
-                    self.q_table[state] = np.ones(self.num_actions, dtype=np.float32) * 10.0
+                # Lazy init for Q‑values
+                if state not in self.q_values:
+                    self.q_values[state] = np.ones(self.num_actions, dtype=np.float32) * 10.0
+                if next_state not in self.q_values and not done:
+                    self.q_values[next_state] = np.ones(self.num_actions, dtype=np.float32) * 10.0
 
-                current_q = self.q_table[state][action]
+                # Current Q
+                current_q = self.q_values[state][action]
 
-                # Calculate target Q-value
+                # Target Q
                 target_q = reward
                 if not done:
-                    if next_state not in self.q_table:
-                        self.q_table[next_state] = np.ones(self.num_actions, dtype=np.float32) * 10.0
+                    # Cache legal actions for next_state if needed
+                    if next_state not in self.legal_actions_cache:
+                        mask = self.get_legal_actions_mask(next_state)
+                        self.legal_actions_cache[next_state] = np.where(mask)[0].tolist()
+                    legal_next = self.legal_actions_cache[next_state]
 
-                    # Max Q-value of next state (for Q-Learning)
-                    next_q_values = self.q_table[next_state].copy()
-                    legal_next_actions_mask = self.get_legal_actions_mask(next_state)
-                    next_q_values[~legal_next_actions_mask] = -np.inf # Mask illegal next actions
-                    max_next_q = np.max(next_q_values)
-
+                    # Compute max over legal next actions
+                    next_q_vals = self.q_values[next_state].copy()
+                    illegal_mask = np.ones(self.num_actions, dtype=bool)
+                    illegal_mask[legal_next] = False
+                    next_q_vals[illegal_mask] = -np.inf
+                    max_next_q = np.max(next_q_vals)
                     target_q += self.gamma * max_next_q
 
-                # Q-Learning update
+                # Q‑learning update
                 td_error = target_q - current_q
-                self.q_table[state][action] += self.lr * td_error
+                self.q_values[state][action] += self.lr * td_error
                 batch_loss += abs(td_error)
-            batch_loss = batch_loss / self.batch_size
+
+            batch_loss /= self.batch_size
             total_loss += batch_loss
 
-        # Epsilon decay
+        # --- Epsilon decay ---
         self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+
+        # --- Update policy for every seen state ---
+        for state in self.q_values.keys():
+            # Ensure legal actions are cached
+            if state not in self.legal_actions_cache:
+                mask = self.get_legal_actions_mask(state)
+                self.legal_actions_cache[state] = np.where(mask)[0].tolist()
+            legal_as = self.legal_actions_cache[state]
+
+            if legal_as:
+                q_vals = self.q_values[state].copy()
+                illegal_mask = np.ones(self.num_actions, dtype=bool)
+                illegal_mask[legal_as] = False
+                q_vals[illegal_mask] = -np.inf
+                best_action = int(np.argmax(q_vals))
+                self.policy[state] = best_action
+            else:
+                if state in self.policy:
+                    del self.policy[state]
+
         return total_loss / self.updates_per_train
-    
+
     def save(self, save_path: str):
-        """
-        Save the Q-Table parameters to a file.
-        """
         data = {
-            "q_vals" : dict(self.q_table)
+            "q_vals": dict(self.q_values),
+            "policy": dict(self.policy)
         }
         with open(save_path, 'wb') as f:
             pickle.dump(data, f)
-        return
 
     def load(self, load_path: str):
-        """
-        Load the Q-Table parameters from a file.
-        """
         if not os.path.exists(load_path):
             raise FileNotFoundError(load_path)
         if os.path.getsize(load_path) == 0:
             raise ValueError("Q-table file is empty")
-        
         with open(load_path, 'rb') as f:
             data = pickle.load(f)
-
-        
-        # Verify data integrity
-        if not isinstance(data, dict):
-            raise ValueError("Loaded file does not contain a valid dictionary.")
-        if len(data.keys()) == 0:
-            raise ValueError("Empty File")
-        
-        # Reconstruct defaultdict
-        self.q_table.update(data['q_vals'])
-        return
+        if not isinstance(data, dict) or len(data) == 0:
+            raise ValueError("Invalid or empty save file")
+        self.q_values.update(data['q_vals'])
+        self.policy.update(data['policy'])
