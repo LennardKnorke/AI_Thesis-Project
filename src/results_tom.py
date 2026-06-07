@@ -6,6 +6,7 @@ from config import *
 from tiny_game import *
 from results_wm import _finalize_plot
 
+
 def read_bagents_results() -> dict[str, pd.DataFrame]:
     def _read(name: str) -> pd.DataFrame:
         path = os.path.join(RESULTS_DIR, name, "final_results.csv")
@@ -26,7 +27,7 @@ def read_bagents_results() -> dict[str, pd.DataFrame]:
 
 
 def read_tom_results(cheat_results: bool, u_rule: str) -> dict[str, pd.DataFrame]:
-    """Load per-game ToM result CSVs. Key columns: moving_avg, moving_avg_{base}, p0/p1_moving_avg_{base}."""
+    """Load per-game ToM result CSVs. Key columns: reward, reward_{base}, p0/p1_reward_{base}."""
     tom_dir = os.path.join(RESULTS_DIR, "ToM-POMCP")
     results = {}
     for game in GAMES:
@@ -54,7 +55,7 @@ def baselines_crossplay(bagents: dict[str, dict[str, AgentList]]) -> pd.DataFram
                 key = f"{type0}_{type1}"
                 if type0 == type1:
                     continue
-                
+
                 agent_list = AgentList([p0_agents[0], p1_agents[1]])
                 r = test_on_all_start_states(env, agent_list, game_name)
                 game_results[key] = r
@@ -63,34 +64,31 @@ def baselines_crossplay(bagents: dict[str, dict[str, AgentList]]) -> pd.DataFram
 
 
 def _tom_avg(df: pd.DataFrame, row_idx: int) -> float:
-    """Average moving_avg over all available baseline partners at the given row index."""
-    cols = [f"moving_avg_{b}" for b in BASELINES if f"moving_avg_{b}" in df.columns]
+    """Average reward over all available baseline partners at the given row index."""
+    cols = [f"reward_{b}" for b in BASELINES if f"reward_{b}" in df.columns]
     return float(df[cols].iloc[row_idx].mean()) if cols else np.nan
 
 
 def _tom_partner(df: pd.DataFrame, row_idx: int, partner: str) -> float:
-    """moving_avg against one specific partner at the given row index."""
-    col = f"moving_avg_{partner}"
+    """Reward against one specific partner at the given row index."""
+    col = f"reward_{partner}"
     return float(df[col].iloc[row_idx]) if col in df.columns else np.nan
 
 
 def _tom_partner_std(df: pd.DataFrame, partner: str, row_idx: int = -1) -> float:
-    """Std of per-run moving_avg values (averaged over P0/P1) for one partner."""
-    run_vals, n = [], 0
-    while True:
-        p0_col = f"p0_moving_avg_{n}_{partner}"
-        p1_col = f"p1_moving_avg_{n}_{partner}"
-        if p0_col not in df.columns or p1_col not in df.columns:
-            break
-        run_vals.append((float(df[p0_col].iloc[row_idx]) + float(df[p1_col].iloc[row_idx])) / 2)
-        n += 1
-    return float(np.std(run_vals)) if len(run_vals) > 1 else np.nan
+    """Std across evaluation runs of the (P0+P1)/2 reward for one partner at the given row index."""
+    vals = []
+    for role in ("p0", "p1"):
+        col = f"{role}_reward_{partner}_std"
+        if col in df.columns:
+            vals.append(float(df[col].iloc[row_idx]))
+    return float(np.mean(vals)) if vals else np.nan
 
 
 def _tom_avg_std(df: pd.DataFrame, row_idx: int = -1) -> float:
     """Mean of per-partner stds across all available baselines."""
     stds = [_tom_partner_std(df, b, row_idx) for b in BASELINES
-            if f"p0_moving_avg_0_{b}" in df.columns]
+            if f"p0_reward_{b}_std" in df.columns]
     return float(np.mean(stds)) if stds else np.nan
 
 
@@ -125,6 +123,7 @@ def plot_reward_heatmap(
     ) -> None:
     """
     Performance heatmap: scenarios (A–G) on Y-axis, algorithms on X-axis.
+    ToM (base) = first episode (no prior adaptation); ToM (full) = last episode (after full adaptation).
     Generates one averaged heatmap plus one per ToM partner (IQL/VDN/PBDP/OSarsa).
     """
     iql_df    = bagents_results["IQL"]
@@ -161,6 +160,7 @@ def plot_reward_heatmap(
             annot_row["ToM (Oracle)"] = _fmt(oracle_val, oracle_std)
 
             if game in tom_results:
+                # row 0 = first episode with no prior adaptation; row -1 = after full adaptation sequence
                 base_val = tom_fn(tom_results[game],  0);  base_std = tom_std_fn(tom_results[game],  0)
                 full_val = tom_fn(tom_results[game], -1);  full_std = tom_std_fn(tom_results[game], -1)
                 row["ToM (base)"]       = base_val;  annot_row["ToM (base)"] = _fmt(base_val, base_std)
@@ -184,30 +184,6 @@ def plot_reward_heatmap(
     for partner in BASELINES:
         df, annot = _build_data(partner)
         _render_perf_heatmap(df, f"performance_heatmap_{u_rule}_vs_{partner}.png", annot)
-
-
-def plot_learning_curve(
-        tom_results: dict[str, pd.DataFrame],
-        u_rule: str,
-    ) -> None:
-    if not tom_results:
-        return
-
-    ENSEMBLE_FILLED = {"A": 4, "B": 4, "C": 4, "D": 4, "E": 4, "F": 9, "G": 24}
-
-    _, ax = plt.subplots(figsize=(12, 5))
-    for game, df in tom_results.items():
-        ma = df["moving_avg"].values
-        color = GAME_COLORS.get(game, "gray")
-        ax.plot(np.arange(1, len(ma) + 1), ma, color=color, label=f"Scenario {game}")
-        if game in ENSEMBLE_FILLED:
-            ax.axvline(ENSEMBLE_FILLED[game], color=color, linestyle="--", linewidth=1.5, alpha=0.6)
-    ax.set_xlabel("Episode")
-    ax.set_ylabel("Normalized Reward")
-    ax.set_ylim(0, 1)
-    ax.legend(ncol=2)
-    ax.grid(True, alpha=0.3)
-    _finalize_plot(f"tom_learning_curve_{u_rule}.png")
 
 
 def _model_free_last(name: str, df: pd.DataFrame, games: list[str]) -> float:
@@ -244,18 +220,9 @@ def _crossplay_score(crossplay_results: dict[str, pd.DataFrame], p0: str, p1: st
 
 
 def _tom_crossplay_std(dfs: dict[str, pd.DataFrame], role: str, partner: str) -> float:
-    """Mean per-game std across runs for ToM as role ('p0'/'p1') against partner."""
-    stds = []
-    for df in dfs.values():
-        run_vals, n = [], 0
-        while True:
-            col = f"{role}_moving_avg_{n}_{partner}"
-            if col not in df.columns:
-                break
-            run_vals.append(float(df[col].iloc[-1]))
-            n += 1
-        if len(run_vals) > 1:
-            stds.append(float(np.std(run_vals)))
+    """Mean per-game std across evaluation runs for ToM as role ('p0'/'p1') against partner."""
+    col = f"{role}_reward_{partner}_std"
+    stds = [float(df[col].iloc[-1]) for df in dfs.values() if col in df.columns]
     return float(np.mean(stds)) if stds else np.nan
 
 
@@ -288,15 +255,15 @@ def _build_crossplay_matrix(
                 matrix.loc[p0, p1] = val
                 annot.loc[p0, p1]  = f"{val:.2f}"
 
-    # --- ToM (full) vs baselines ---
+    # --- ToM (full) vs baselines: last episode after full adaptation ---
     filtered_tom = {g: df for g, df in tom_results.items() if g in games}
     for base in BASELINES:
         p0_vals, p1_vals = [], []
         for df in filtered_tom.values():
-            if f"p0_moving_avg_{base}" in df.columns:
-                p0_vals.append(float(df[f"p0_moving_avg_{base}"].iloc[-1]))
-            if f"p1_moving_avg_{base}" in df.columns:
-                p1_vals.append(float(df[f"p1_moving_avg_{base}"].iloc[-1]))
+            if f"p0_reward_{base}" in df.columns:
+                p0_vals.append(float(df[f"p0_reward_{base}"].iloc[-1]))
+            if f"p1_reward_{base}" in df.columns:
+                p1_vals.append(float(df[f"p1_reward_{base}"].iloc[-1]))
         if p0_vals:
             val = float(np.mean(p0_vals))
             std = _tom_crossplay_std(filtered_tom, "p0", base)
@@ -308,15 +275,15 @@ def _build_crossplay_matrix(
             matrix.loc[base, "ToM (full)"] = val
             annot.loc[base, "ToM (full)"]  = _fmt(val, std)
 
-    # --- ToM (Oracle) vs baselines ---
+    # --- ToM (Oracle) vs baselines: single episode (no adaptation sequence) ---
     filtered_cheat = {g: df for g, df in cheat_results.items() if g in games}
     for base in BASELINES:
         p0_vals, p1_vals = [], []
         for df in filtered_cheat.values():
-            if f"p0_moving_avg_{base}" in df.columns:
-                p0_vals.append(float(df[f"p0_moving_avg_{base}"].iloc[-1]))
-            if f"p1_moving_avg_{base}" in df.columns:
-                p1_vals.append(float(df[f"p1_moving_avg_{base}"].iloc[-1]))
+            if f"p0_reward_{base}" in df.columns:
+                p0_vals.append(float(df[f"p0_reward_{base}"].iloc[-1]))
+            if f"p1_reward_{base}" in df.columns:
+                p1_vals.append(float(df[f"p1_reward_{base}"].iloc[-1]))
         if p0_vals:
             val = float(np.mean(p0_vals))
             std = _tom_crossplay_std(filtered_cheat, "p0", base)
@@ -360,23 +327,21 @@ def plot_crossplay(
         crossplay_results=crossplay_results,
     )
 
-    # Heatmap 1: average across all games
+    # Heatmap averaged across all games
     matrix_all, annot_all = _build_crossplay_matrix(**shared, games=GAMES)
     _render_crossplay(matrix_all, f"crossplay_heatmap_{u_rule}.png", annot_all)
 
-    # Heatmap per individual game
+    # One heatmap per individual game
     for game in GAMES:
         matrix, annot = _build_crossplay_matrix(**shared, games=[game])
         _render_crossplay(matrix, f"crossplay_heatmap_{game}_{u_rule}.png", annot)
 
 
-
 def run_results_tom(b_agents):
     cross_play_results = baselines_crossplay(b_agents)
     baselines_results  = read_bagents_results()
-    for u_rule in ['uniform']:
+    for u_rule in ['update']:
         cheat_results = read_tom_results(True,  u_rule)
         tom_results   = read_tom_results(False, u_rule)
         plot_reward_heatmap(tom_results, cheat_results, baselines_results, u_rule)
-        plot_learning_curve(tom_results, u_rule)
         plot_crossplay(tom_results, cheat_results, baselines_results, cross_play_results, u_rule)

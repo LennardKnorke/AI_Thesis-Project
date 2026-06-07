@@ -1,8 +1,8 @@
 {
     "best_params": {
-        "n_simulations": 2500,
+        "n_simulations": 100,
         "exploration_constant": 1.41,
         "gamma": 0.99,
-        "selection_rule": "ucb1_tuned"
+        "selection_rule": "ucb1"
     }
 }

@@ -58,7 +58,7 @@ RESULTS_DIR             = "Results"
 # Episode Macros
 TRAINING_EPISODES_HYPERSEARCH = 1_000
 TRAINING_EPISODES_FINAL = 10_000
-NUM_RUNS                = 5
+NUM_RUNS                = 10
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MAIN_SEED = 42

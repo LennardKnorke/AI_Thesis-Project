@@ -384,8 +384,9 @@ class POMCP_ToM_Agent(ModelBasedAgent):
                     _particles[state] = self._inverse_prop(state, partner_priv_h, action)
                 total = sum(_particles.values())
                 if total > 1e-12:
-                    _particles = {s: v / total for s, v in _particles.items()}
-                self._particles = _particles
+                    self._particles = {s: v / total for s, v in _particles.items()}
+                else:
+                    self._particles = None  # world model gives zero prob to all observed actions; fall back to uniform
             return
 
         cons     = CONSISTENT_WORLDS[self.game_name][priv_h]
@@ -433,7 +434,8 @@ class POMCP_ToM_Agent(ModelBasedAgent):
         probs = probs * legal_mask
         total = probs.sum()
         probs = probs / total if total > 1e-12 else legal_mask / legal_mask.sum()
-        return int(np.random.choice(self.action_dim, p=probs))
+        # return int(np.random.choice(self.action_dim, p=probs))  # stochastic sampling
+        return int(np.argmax(probs))
 
     def _inverse_prop(self, state, partner_priv_h, partner_a) -> float:
         """Return P(partner_a | history) for belief weighting when agent_id == 1."""

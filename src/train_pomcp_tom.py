@@ -11,7 +11,8 @@ from agents import *
 from config import *
 from train_worldmodel import setup_baseline_agents
 
-NUM_RUNS = 5
+NUM_RUNS     = 5
+NUM_EVAL_RUNS = 10   # independent evaluation repeats per config / final run
 
 _name = "ToM-POMCP"
 # Setting Folders
@@ -21,8 +22,8 @@ os.makedirs(_results_dir, exist_ok=True)
 
 
 pomcp_param_grid = {
-    'n_simulations' : [2_500],
-    'exploration_constant' : [1.41, 2.0],
+    'n_simulations' : [100],
+    'exploration_constant' : [1.41],
     'gamma' : [0.99],
     'selection_rule' : ["ucb1", "ucb1_tuned", "puct"],
 }
@@ -136,119 +137,148 @@ def _evaluate_agents(
     )
     start_states = list(env.start_states())
     num_s0       = len(start_states)
-    extra_parts  = list(env.start_states())
-    results      = {}
+    #extra_parts  = list(env.start_states())
+    all_results = []
 
-    # --- Evaluate as P0 ---
-    tom_agent.agent_id = 0
-    pbar = tqdm(baseline_agents.items(), desc="Evaluating as P0", leave=False)
-    for base_name, base_agents in pbar:
-        agents = AgentList([tom_agent, base_agents[1]])
-        if cheat_toggle:
-            tom_agent.cheat_partner = base_agents[1]
+    for attempt in tqdm(range(NUM_EVAL_RUNS), desc="Attempts", leave=False):
+        results = {}
 
-        sum_rewards = sum_moving_avg = None
-        for n in tqdm(range(num_s0), desc="Runs", leave=False):
-            tom_agent.reset()
-            run_rewards, run_moving_avg = [], []
+        # --- Evaluate as P0 ---
+        tom_agent.agent_id = 0
+        pbar = tqdm(baseline_agents.items(), desc="Partner Options as P0", leave=False)
+        for base_name, base_agents in pbar:
 
-            remaining = [s for i, s in enumerate(start_states) if i != n]
-            random.shuffle(remaining)
-            run_start_states = [start_states[n]] + remaining
+            agents = AgentList([tom_agent, base_agents[1]])
 
-            if not cheat_toggle:
-                random.shuffle(extra_parts)
-                run_start_states.extend(extra_parts)
+            # Oracle case: Give access to partner policy
+            if cheat_toggle:
+                tom_agent.cheat_partner = base_agents[1]
+            else:
+                final_states = list(env.start_states())
+                random.shuffle(final_states)
+            
+            sum_rewards = None
+            for n in tqdm(range(num_s0), desc="Starting Options", leave=False):
+                tom_agent.reset()
 
-            for s0 in tqdm(run_start_states, desc="s0", leave=False):
-                tom_agent.reuse_tree()
-                episode_log = run_episode(env, agents, s0, test_episode=True)
-                reward = normalize_payoffs(episode_log[-1],
-                                          PAYOFFS[game_name].max(),
-                                          PAYOFFS[game_name].min())
-                run_rewards.append(np.float32(reward))
-                avg = np.mean(run_rewards[-min(len(start_states), len(run_rewards)):])
-                run_moving_avg.append(avg)
-                tom_agent.update_ensemble(episode_log[:-1])
+                if not cheat_toggle:
+                    remaining = [s for i, s in enumerate(start_states) if i != n]
+                    random.shuffle(remaining)
+                    run_start_states = [start_states[n]] + remaining + [final_states[n]]
+                else:
+                    run_start_states = [start_states[n]]
 
-            run_rewards    = np.array(run_rewards)
-            run_moving_avg = np.array(run_moving_avg)
-            results[f"p0_reward_{n}_{base_name}"]     = run_rewards
-            results[f"p0_moving_avg_{n}_{base_name}"] = run_moving_avg
+                eval_rewards = []
+                for s0 in tqdm(run_start_states, desc="Successive Iterations", leave=False):
+                    tom_agent.reuse_tree()
+                    episode_log = run_episode(env, agents, s0, test_episode=True)
+                    reward = normalize_payoffs(episode_log[-1],
+                                              PAYOFFS[game_name].max(),
+                                              PAYOFFS[game_name].min())
+                    tom_agent.update_ensemble(episode_log[:-1])
+                    eval_rewards.append(np.float32(reward))
 
-            if sum_rewards is None:
-                sum_rewards    = np.zeros_like(run_rewards)
-                sum_moving_avg = np.zeros_like(run_moving_avg)
-            sum_rewards    += run_rewards
-            sum_moving_avg += run_moving_avg
+                run_results = np.array(eval_rewards)
+                results[f"p0_reward_{n}_{base_name}"]     = run_results
+                
 
-        results[f"p0_reward_{base_name}"]     = sum_rewards    / num_s0
-        results[f"p0_moving_avg_{base_name}"] = sum_moving_avg / num_s0
+                if sum_rewards is None:
+                    sum_rewards = np.zeros_like(run_results)
+                sum_rewards += run_results
 
-    # --- Evaluate as P1 ---
-    tom_agent.agent_id = 1
-    pbar = tqdm(baseline_agents.items(), desc="Evaluating as P1", leave=False)
-    for base_name, base_agents in pbar:
-        agents = AgentList([base_agents[0], tom_agent])
-        if cheat_toggle:
-            tom_agent.cheat_partner = base_agents[0]
+            results[f"p0_reward_{base_name}"]     = sum_rewards / num_s0
+            
 
-        sum_rewards = sum_moving_avg = None
-        for n in tqdm(range(num_s0), desc="Runs", leave=False):
-            tom_agent.reset()
-            run_rewards, run_moving_avg = [], []
+        # --- Evaluate as P1 ---
+        tom_agent.agent_id = 1
+        pbar = tqdm(baseline_agents.items(), desc="Partner Options as P1", leave=False)
+        for base_name, base_agents in pbar:
+            agents = AgentList([base_agents[0], tom_agent])
+            if cheat_toggle:
+                tom_agent.cheat_partner = base_agents[0]
+            else:
+                final_states = list(env.start_states())
+                random.shuffle(final_states)
 
-            remaining = [s for i, s in enumerate(start_states) if i != n]
-            random.shuffle(remaining)
-            run_start_states = [start_states[n]] + remaining
-            if not cheat_toggle:
-                random.shuffle(extra_parts)
-                run_start_states.extend(extra_parts)
+            sum_rewards = None
+            for n in tqdm(range(num_s0), desc="Starting Options", leave=False):
+                tom_agent.reset()
 
-            for s0 in tqdm(run_start_states, desc="s0", leave=False):
-                tom_agent.reuse_tree()
-                episode_log = run_episode(env, agents, s0, test_episode=True)
-                reward = normalize_payoffs(episode_log[-1],
-                                          PAYOFFS[game_name].max(),
-                                          PAYOFFS[game_name].min())
-                run_rewards.append(np.float32(reward))
-                window = min(len(start_states), len(run_moving_avg))
-                avg = np.mean(run_rewards[-window:]) if run_rewards else reward
-                run_moving_avg.append(avg)
-                tom_agent.update_ensemble(episode_log[:-1])
+                if cheat_toggle:
+                    run_start_states = [start_states[n]]
+                else:
+                    remaining = [s for i, s in enumerate(start_states) if i != n]
+                    random.shuffle(remaining)
+                    run_start_states = [start_states[n]] + remaining + [final_states[n]]
+                    
 
-            run_rewards    = np.array(run_rewards)
-            run_moving_avg = np.array(run_moving_avg)
-            results[f"p1_reward_{n}_{base_name}"]     = run_rewards
-            results[f"p1_moving_avg_{n}_{base_name}"] = run_moving_avg
+                eval_rewards = []
+                for s0 in tqdm(run_start_states, desc="Successive Iterations", leave=False):
+                    tom_agent.reuse_tree()
+                    episode_log = run_episode(env, agents, s0, test_episode=True)
+                    reward = normalize_payoffs(episode_log[-1],
+                                              PAYOFFS[game_name].max(),
+                                              PAYOFFS[game_name].min())
+                    tom_agent.update_ensemble(episode_log[:-1])
+                    eval_rewards.append(np.float32(reward))
 
-            if sum_rewards is None:
-                sum_rewards    = np.zeros_like(run_rewards)
-                sum_moving_avg = np.zeros_like(run_moving_avg)
-            sum_rewards    += run_rewards
-            sum_moving_avg += run_moving_avg
+                run_results = np.array(eval_rewards)
+                results[f"p1_reward_{n}_{base_name}"] = run_results
+                
 
-        results[f"p1_reward_{base_name}"]     = sum_rewards    / num_s0
-        results[f"p1_moving_avg_{base_name}"] = sum_moving_avg / num_s0
+                if sum_rewards is None:
+                    sum_rewards = np.zeros_like(run_results)
+                sum_rewards += run_results
 
-    
-    for base_name in baseline_agents.keys():
-        p0_r  = results[f"p0_reward_{base_name}"]
-        p1_r  = results[f"p1_reward_{base_name}"]
-        p0_ma = results[f"p0_moving_avg_{base_name}"]
-        p1_ma = results[f"p1_moving_avg_{base_name}"]
-        n = min(len(p0_r), len(p1_r))
-        results[f"reward_{base_name}"]      = (p0_r[:n]  + p1_r[:n])  / 2
-        results[f"moving_avg_{base_name}"]  = (p0_ma[:n] + p1_ma[:n]) / 2
+            results[f"p1_reward_{base_name}"] = sum_rewards / num_s0
+            
 
-    n = min(len(results[f"reward_{b}"]) for b in baseline_agents)
-    results["reward"]      = np.mean([results[f"reward_{b}"][:n]     for b in baseline_agents], axis=0)
-    results["moving_avg"]  = np.mean([results[f"moving_avg_{b}"][:n] for b in baseline_agents], axis=0)
 
-    results = {k: v[:n] if isinstance(v, np.ndarray) else v for k, v in results.items()}
+        for base_name in baseline_agents.keys():
+            p0_r  = results[f"p0_reward_{base_name}"]
+            p1_r  = results[f"p1_reward_{base_name}"]
+            n = min(len(p0_r), len(p1_r))
+            results[f"reward_{base_name}"] = (p0_r[:n]  + p1_r[:n])  / 2
+        
+        n = min(len(results[f"reward_{b}"]) for b in baseline_agents)
+        results["reward"] = np.mean([results[f"reward_{b}"][:n] for b in baseline_agents], axis=0)
 
-    return results, tom_agent
+        results = {k: v[:n] if isinstance(v, np.ndarray) else v for k, v in results.items()}
 
+        all_results.append(results)
+
+    return _average_results(all_results), tom_agent
+
+
+
+_STD_EXACT    = {"reward", "moving_avg"}
+_STD_PREFIXES = ("p0_reward_", "p1_reward_")
+
+def _needs_std(key: str) -> bool:
+    if key in _STD_EXACT:
+        return True
+    for prefix in _STD_PREFIXES:
+        if key.startswith(prefix):
+            remainder = key[len(prefix):]
+            return bool(remainder) and not remainder[0].isdigit()
+    return False
+
+
+def _average_results(run_results: list[dict]) -> dict:
+    """Return a dict with the same keys as each input dict, values averaged across runs.
+    For selected keys also adds a '{key}_std' entry with the element-wise std."""
+    merged = {}
+    for key in run_results[0]:
+        arrays = [r[key] for r in run_results if isinstance(r.get(key), np.ndarray)]
+        if len(arrays) == len(run_results):
+            min_len   = min(len(a) for a in arrays)
+            truncated = [a[:min_len] for a in arrays]
+            merged[key] = np.mean(truncated, axis=0)
+            if _needs_std(key):
+                merged[f"{key}_std"] = np.std(truncated, axis=0)
+        else:
+            merged[key] = run_results[0][key]
+    return merged
 
 
 def train_pomcp_tom():
@@ -258,7 +288,7 @@ def train_pomcp_tom():
 
     final_params = []  # [0]=uniform, [1]=update
 
-    pbar0 = tqdm(['uniform', 'update'], leave=True)
+    pbar0 = tqdm(['update'], leave=True)
     for u_rule in pbar0:
         _postfix0 = {
             'Rule' : u_rule
@@ -286,12 +316,8 @@ def train_pomcp_tom():
                 break
 
             avg, results, planners = train_on_params(
-                all_baseline_agents,
-                all_wms,
-                spec_ensemble,
-                cheat_toggle=True,
-                update_rule=u_rule,
-                **params
+                all_baseline_agents, all_wms, spec_ensemble,
+                cheat_toggle=True, update_rule=u_rule, **params
             )
 
             if avg > best_avg:
@@ -315,17 +341,18 @@ def train_pomcp_tom():
         final_params.append(best_params)
 
     # --- World-model evaluation with best params ---
-    pbar2 = tqdm(['uniform', 'update'], desc="World-model eval", leave=True)
+    pbar2 = tqdm(['update'], desc="Non-Oracle Runs", leave=True)
     for u_rule in pbar2:
         tqdm.write(f"\nRunning {u_rule}")
         csv_path = os.path.join(_results_dir, f"A_{u_rule}_final_results.csv")
         if os.path.exists(csv_path):
             continue
 
-        if u_rule=='uniform':
-            params = final_params[0]
-        else:
-            params = final_params[1]
+        params = final_params[-1]
+        #if u_rule=='uniform':
+        #    params = final_params[0]
+        #else:
+        #    params = final_params[-1]
 
         if params is None:
             raise RuntimeError("Something went wrong")
@@ -345,8 +372,6 @@ def train_pomcp_tom():
 
             planner = planners[game_name]
             planner.save(os.path.join(_results_dir, f"G_{game_name}_{u_rule}_agent.pkl"))
-
-
     return
 
 
@@ -387,7 +412,7 @@ def train_on_params(
         game_results, final_planner = _evaluate_agents(
             env, agent_params, baseline_agents, game_name, special_ensemble, cheat_toggle
         )
-        eval_reward = float(game_results['moving_avg'][-1])
+        eval_reward = float(game_results['reward'][-1])
         per_game_eval[game_name] = eval_reward
         results[game_name]  = game_results
         planners[game_name] = final_planner
