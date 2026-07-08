@@ -49,6 +49,7 @@ class POMCP_ToM_Agent(ModelBasedAgent):
             cheat_partner: BaseAgent | None = None,
             device: str = "cpu",
             gamma: float = 0.99,
+            exact_planning:bool = True, # Added switch
     ):
         super().__init__(env, num_cards, num_actions)
 
@@ -58,6 +59,7 @@ class POMCP_ToM_Agent(ModelBasedAgent):
         self.game_name      = game_name
         self.agent_id       = agent_id
         self.gamma          = gamma
+        self.exact_planning = exact_planning
 
         self.policy:               dict[tuple, int]            = {}
         self.legal_actions_cache:  dict[tuple, tuple[int, ...]] = {}
@@ -118,6 +120,7 @@ class POMCP_ToM_Agent(ModelBasedAgent):
         if priv_h is None:
             self.root_node = None
             self._last_action = None
+            self._particles = None # Potential Fix
             return
 
         if (self.root_node is not None
@@ -137,6 +140,21 @@ class POMCP_ToM_Agent(ModelBasedAgent):
         assert states,     f"empty belief for {priv_history}"
         assert legal_as,   f"empty actions for {priv_history}"
 
+        # Exact Planning Fix?!
+        if self.exact_planning:
+            total_w = sum(weights) if weights else 1.0
+            belief_dict = {}
+            for s, w in zip(states, weights):
+                p = w / total_w
+                if p > 1e-15:
+                    belief_dict[s] = p
+            if not belief_dict:
+                val = 1.0 / len(states)
+                belief_dict = {s: val for s in states}
+
+            best_action, _ = self._exact_value_of_belief(belief_dict, priv_history)
+            return best_action
+
         if self.root_node is None:
             self.root_node = _Node()
 
@@ -152,6 +170,47 @@ class POMCP_ToM_Agent(ModelBasedAgent):
 
         return max(legal_as, key=lambda a: self.root_node.Q_ha[a])
 
+    def _exact_value_of_belief(self, belief: dict[tuple, float], priv_h: tuple) -> tuple[int, float]:
+        """
+        Recursively solves the exact induced POMDP over the belief-MDP space.
+        Returns (best_action, expected_value).
+        """
+        legal_as = self.legal_actions_cache.get(priv_h)
+        if not legal_as:
+            return -1, 0.0
+
+        best_action = -1
+        best_q = -float('inf')
+
+        for a in legal_as:
+            q_val = 0.0
+            next_beliefs = defaultdict(dict)
+            expected_immediate_reward = 0.0
+
+            # Compute transition and reward dynamics from each joint state in the current belief
+            for state, prob in belief.items():
+                next_state, next_h, reward, done = self._env_step(state, priv_h, a)
+                expected_immediate_reward += prob * reward
+                if not done:
+                    next_state_tup = tuple(next_state)
+                    next_beliefs[next_h][next_state_tup] = next_beliefs[next_h].get(next_state_tup, 0.0) + prob
+
+            # Recursively solve the downstream belief states
+            for next_h, state_probs in next_beliefs.items():
+                total_prob = sum(state_probs.values())
+                if total_prob < 1e-15:
+                    continue
+                normalized_belief = {s: p / total_prob for s, p in state_probs.items()}
+                _, V_next = self._exact_value_of_belief(normalized_belief, next_h)
+                q_val += total_prob * self.gamma * V_next
+
+            q_val += expected_immediate_reward
+            if q_val > best_q:
+                best_q = q_val
+                best_action = a
+
+        return best_action, best_q
+
     def reset(self):
         self.current_ensemble = self.base_ensemble.copy()
         self.current_mask     = np.zeros(self.past_episode_context, dtype=np.float32)
@@ -159,6 +218,7 @@ class POMCP_ToM_Agent(ModelBasedAgent):
         self.mask_tens     = torch.tensor(self.current_mask,     dtype=torch.float32, device=self.device)
         self.root_node    = None
         self._last_action = None
+        self._particles = None      # Possible fix.
         self._init_tables()
 
     def save(self, path: str):
